@@ -424,7 +424,7 @@ async function handleStartCommand(bot_token, userId, chatId, chatType, GROUP_ID,
 
         if (!isInGroup) {
             const groupName = await getGroupName(bot_token, GROUP_ID);
-            await sendMessage(bot_token, chatId, `⚠️ 当前用户无注册权限，只允许 <b>${groupName}</b> 群组内部人员注册使用。`, moontvUrl, siteName);
+            await sendMessage(bot_token, chatId, `⚠️ 当前用户无注册权限，只允许 <b>${groupName}</b> 群组内部人员注册使用。\n\n请先加入群组：<a href="https://t.me/omni_stars">@omni_stars</a>`, moontvUrl, siteName);
             return new Response('OK');
         }
 
