@@ -6,6 +6,8 @@ keep_vars = true
 # 环境变量配置（可在 Cloudflare 控制台或此处配置）
 [vars]
 MISUB_BASE = "https://subhub.tsmoe.com"
+SUBSTORE_BASE = "https://substore.tsmoe.com"
+SUBSTORE_NAME = "relay"
 # BOT_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 # GROUP_ID = "-1001234567890"
 # MOONTVURL = "https://moontv.dedyn.io"

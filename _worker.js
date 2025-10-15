@@ -83,6 +83,41 @@ function detectCountries(names) {
     return Array.from(found);
 }
 
+function buildTopN(list, n) {
+    const counter = new Map();
+    for (const item of list) {
+        if (!item) continue;
+        const key = String(item);
+        counter.set(key, (counter.get(key) || 0) + 1);
+    }
+    return Array.from(counter.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, Math.max(1, Math.min(n, counter.size)))
+        .map(([k, v]) => ({ key: k, count: v }));
+}
+
+function renderBarChart(items, total, width = 12) {
+    const lines = [];
+    for (const { key, count } of items) {
+        const ratio = total > 0 ? count / total : 0;
+        const filled = Math.max(1, Math.round(ratio * width));
+        const bar = '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled));
+        const percent = (ratio * 100).toFixed(0).padStart(3, ' ');
+        lines.push(`${key.padEnd(10, ' ')} ${bar} ${percent}% (${count})`);
+    }
+    return lines;
+}
+
+function sampleArray(arr, n) {
+    if (!Array.isArray(arr) || arr.length === 0 || n <= 0) return [];
+    const copy = arr.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, Math.min(n, copy.length));
+}
+
 function parseProtocolsFrom(content, nodes) {
     const protoSet = new Set();
     const addFrom = (s) => {
@@ -92,14 +127,28 @@ function parseProtocolsFrom(content, nodes) {
     };
     addFrom(content);
     if (Array.isArray(nodes)) nodes.forEach(n => addFrom(n));
-    // 统一HYSTERIA/Hy2
-    const map = new Map([
-        ['HYSTERIA2','Hysteria2'],['HY','Hysteria'],['HY2','Hysteria2']
-    ]);
-    return Array.from(protoSet).map(p => map.get(p) || p);
+    return Array.from(protoSet).map(normalizeProtocolName);
 }
 
-async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword) {
+function normalizeProtocolName(protoRaw) {
+    if (!protoRaw) return '';
+    const p = String(protoRaw).toUpperCase();
+    if (p === 'HY' || p === 'HYSTERIA') return 'Hysteria';
+    if (p === 'HY2' || p === 'HYSTERIA2') return 'Hysteria2';
+    const map = {
+        'VMESS': 'VMESS',
+        'VLESS': 'VLESS',
+        'TROJAN': 'TROJAN',
+        'SS': 'SS',
+        'SSR': 'SSR',
+        'TUIC': 'TUIC',
+        'ANYTLS': 'ANYTLS',
+        'SOCKS5': 'SOCKS5'
+    };
+    return map[p] || p;
+}
+
+async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName) {
     try {
         // 先回执
         await sendSimpleMessage(bot_token, chatId, '🔎 正在查询订阅信息，请稍候...');
@@ -145,9 +194,71 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         }
 
         // 若 MiSub 不可用或需要鉴权，走直连兜底解析
-        // 严格依赖 MiSub：不再自解析，若未得到数据则回显错误提示
-        if ((count === null && !userInfo) || !debug) {
-            await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：MiSub 未返回数据。请确认 MISUB_BASE 可访问，并已在 MiSub 前端“测试订阅/批量导入”可正常解析该链接。');
+        // 从 Sub-Store 拉节点（强制 target=base64，UA v2rayN），并统计节点信息（优先以 Sub-Store 为准）
+        let nodeSampleNames = [];
+        let protocols = [];
+        let sampledCountries = [];
+        if (substoreBase && substoreName) {
+            try {
+                const urlParam = encodeURIComponent(subUrl);
+                // 1) 先尝试 JSON，拿 name/type/数量
+                const jsonUrl = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=JSON&noCache=true`;
+                let parsedFromJson = false;
+                try {
+                    const jr = await fetch(jsonUrl, { method: 'GET' });
+                    if (jr.ok) {
+                        const jtext = await jr.text();
+                        const list = JSON.parse(jtext);
+                        if (Array.isArray(list) && list.length > 0) {
+                            const jsonNames = list.map(i => i?.name).filter(Boolean);
+                            const jsonTypes = list.map(i => i?.type).filter(Boolean);
+                            if (jsonTypes.length) {
+                                protocols = Array.from(new Set(jsonTypes.map(t => String(t).toUpperCase())));
+                            }
+                            if (jsonNames.length) {
+                                nodeSampleNames = sampleArray(jsonNames, 3);
+                                const countryNames = sampleArray(jsonNames, 5);
+                                sampledCountries = Array.from(new Set(detectCountries(countryNames)));
+                            }
+                            count = list.length;
+                            parsedFromJson = true;
+                        }
+                    }
+                } catch {}
+                // 2) 若 JSON 不可用，再退回 base64 行文本
+                if (!parsedFromJson) {
+                    const subUrlFull = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=base64&ua=v2rayN/6.45&noCache=true`;
+                    const resp = await fetch(subUrlFull, { method: 'GET' });
+                    if (resp.ok) {
+                        const b64 = await resp.text();
+                        let content = '';
+                        try { content = atob(b64.replace(/\s/g, '')); } catch { content = b64; }
+                        const lines = content.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                        const nodeLines = lines.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                        const protoSet = new Set();
+                        nodeLines.forEach(l => { const m = l.match(/^(\w+):\/\//); if (m) protoSet.add(m[1].toLowerCase()); });
+                        protocols = Array.from(protoSet).map(p => p.toUpperCase());
+                        count = nodeLines.length;
+                        const namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                        if (namesAll.length === 0) {
+                            const reName = /#([^#\n\r]*)$/;
+                            const fallback = nodeLines.map(l => {
+                                const m = l.match(reName); return m ? decodeURIComponent(m[1]) : null;
+                            }).filter(Boolean);
+                            namesAll.push(...fallback);
+                        }
+                        nodeSampleNames = sampleArray(namesAll, 3);
+                        const countryNames = sampleArray(namesAll, 5);
+                        sampledCountries = Array.from(new Set(detectCountries(countryNames)));
+                    }
+                }
+            } catch (e) {
+                // 忽略 Sub-Store 错误，继续输出已获取的信息
+            }
+        }
+        // 如果仍无任何信息，则提示失败
+        if ((count === null && !userInfo)) {
+            await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：后端未返回有效数据，请稍后重试。');
             return new Response('OK');
         }
 
@@ -165,12 +276,18 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         const percent = total && total > 0 ? (used / total) * 100 : null;
         const bar = percent !== null ? createProgressBar(percent) : null;
 
-        const protocols = parseProtocolsFrom(debug?.processedContent, debug?.validNodes);
-        const sampleNames = (debug?.validNodes || []).map(decodeNodeName).filter(Boolean).slice(0, 3);
-        const countries = detectCountries(sampleNames);
+        const debugProtocols = parseProtocolsFrom(debug?.processedContent, debug?.validNodes);
+        // 合并 Sub-Store 与 MiSub 提供的信息
+        const mergedProtocols = Array.from(new Set([...(protocols || []), ...(debugProtocols || [])]));
+        const sampleNames = (nodeSampleNames.length ? nodeSampleNames : (debug?.validNodes || []).map(decodeNodeName).filter(Boolean).slice(0, 3));
+        const countries = sampledCountries.length ? sampledCountries : detectCountries(sampleNames);
+
+        // TopN: 协议/地区
+        const protocolTop = buildTopN(mergedProtocols.map(normalizeProtocolName), 5);
+        const countryTop = buildTopN(sampledCountries.length ? sampledCountries : detectCountries((debug?.validNodes || []).map(decodeNodeName)), 5);
 
         const lines = [];
-        lines.push(`订阅域名: <code>${extractHostname(subUrl)}</code>`);
+        lines.push(`订阅链接: <code>${subUrl}</code>`);
         if (used !== null && total !== null) {
             lines.push(`流量详情: ${formatBytes(used)} / ${formatBytes(total)}`);
             if (percent !== null) lines.push(`使用进度: ${bar} ${percent.toFixed(1)}%`);
@@ -178,16 +295,27 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         }
         if (expire) {
             const cn = expire.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-            lines.push(`到期时间: ${cn}`);
+            const daysLeft = Math.ceil((expire.getTime() - Date.now()) / (24 * 3600 * 1000));
+            lines.push(`到期时间: ${cn}（剩余 ${daysLeft} 天）`);
         } else if (userInfo && userInfo.expire === 0) {
             lines.push('到期时间: 长期有效');
         }
         if (typeof count === 'number') lines.push(`节点总数: ${count}`);
-        if (protocols.length) lines.push(`协议类型: ${protocols.join(', ')}`);
+        if (mergedProtocols.length) lines.push(`协议类型: ${Array.from(new Set(mergedProtocols.map(normalizeProtocolName))).join(', ')}`);
         if (countries.length) lines.push(`覆盖范围: ${countries.join('、')}`);
+        if (protocolTop.length) {
+            lines.push('协议占比:');
+            renderBarChart(protocolTop, mergedProtocols.length).forEach(l => lines.push(l));
+        }
+        if (countryTop.length) {
+            lines.push('地区占比:');
+            renderBarChart(countryTop, (sampledCountries.length ? sampledCountries : countries).length).forEach(l => lines.push(l));
+        }
         if (sampleNames.length) {
             lines.push('示例节点:');
             sampleNames.forEach(n => lines.push(n));
+        } else {
+            lines.push('示例节点: 暂无可用名称');
         }
 
         await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
@@ -236,6 +364,8 @@ export default {
         const GROUP_ID = env.GROUP_ID || "-1002563172210";
         const misubBase = env.MISUB_BASE || null; // MiSub 后端地址
         const misubAdminPassword = env.MISUB_ADMIN_PASSWORD || null; // MiSub 管理密码，用于获取 Cookie
+        const substoreBase = env.SUBSTORE_BASE || null; // Sub-Store 后端地址
+        const substoreName = env.SUBSTORE_NAME || 'relay'; // Sub-Store 订阅名
         const siteName = env.NEXT_PUBLIC_SITE_NAME || null;
         const url = new URL(request.url);
         const path = url.pathname;
@@ -259,7 +389,7 @@ export default {
 
         // 处理 Telegram Webhook
         if (request.method === 'POST') {
-            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword);
+            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName);
         }
 
         // 默认返回404错误页面（伪装）
@@ -519,7 +649,7 @@ async function isCommandForThisBot(text, bot_token) {
 }
 
 // 处理 Telegram Webhook
-async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword) {
+async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName) {
     try {
         const update = await request.json();
 
@@ -563,7 +693,7 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             const urlMatch = normalizedText.match(/https?:\/\/[^\s]+/i);
             if (urlMatch) {
                 const subUrl = urlMatch[0];
-                return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword);
+                return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName);
             }
         }
 
