@@ -40,6 +40,166 @@ function extractBaseUrl(url) {
     }
 }
 
+// 简易字节格式化
+function formatBytes(bytes) {
+    if (typeof bytes !== 'number' || !isFinite(bytes) || bytes < 0) return '未知';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    if (bytes === 0) return '0 B';
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    const value = bytes / Math.pow(1024, i);
+    return `${value.toFixed(i >= 2 ? 2 : 1)} ${units[i]}`;
+}
+
+function createProgressBar(percentage) {
+    const total = 10;
+    const filled = Math.min(total, Math.max(0, Math.round((percentage / 100) * total)));
+    return '█'.repeat(filled) + '░'.repeat(total - filled);
+}
+
+function extractHostname(u) {
+    try { return new URL(u).hostname; } catch { return '未知'; }
+}
+
+function decodeNodeName(link) {
+    const idx = link.lastIndexOf('#');
+    if (idx === -1) return null;
+    try { return decodeURIComponent(link.substring(idx + 1)); } catch { return link.substring(idx + 1); }
+}
+
+function detectCountries(names) {
+    const tokens = [
+        ['中国','中国'],['香港','香港'],['台湾','台湾'],['美国','美国'],['日本','日本'],['新加坡','新加坡'],
+        ['韩国','韩国'],['德国','德国'],['英国','英国'],['法国','法国'],['加拿大','加拿大'],['澳大利亚','澳大利亚'],
+        ['俄罗斯','俄罗斯'],['印度','印度'],['荷兰','荷兰'],['瑞士','瑞士'],['瑞典','瑞典'],['挪威','挪威'],
+        ['丹麦','丹麦'],['芬兰','芬兰'],['土耳其','土耳其'],['越南','越南'],['泰国','泰国'],['马来西亚','马来西亚'],
+        ['菲律宾','菲律宾'],['印度尼西亚','印尼'],['阿联酋','阿联酋'],['墨西哥','墨西哥'],['巴西','巴西'],['阿根廷','阿根廷']
+    ];
+    const found = new Set();
+    for (const name of names) {
+        for (const [kw, label] of tokens) {
+            if (name && name.includes(kw)) found.add(label);
+        }
+    }
+    return Array.from(found);
+}
+
+function parseProtocolsFrom(content, nodes) {
+    const protoSet = new Set();
+    const addFrom = (s) => {
+        if (!s) return;
+        const re = /(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//gi;
+        let m; while ((m = re.exec(s)) !== null) { protoSet.add(m[1].toUpperCase()); }
+    };
+    addFrom(content);
+    if (Array.isArray(nodes)) nodes.forEach(n => addFrom(n));
+    // 统一HYSTERIA/Hy2
+    const map = new Map([
+        ['HYSTERIA2','Hysteria2'],['HY','Hysteria'],['HY2','Hysteria2']
+    ]);
+    return Array.from(protoSet).map(p => map.get(p) || p);
+}
+
+async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword) {
+    try {
+        // 先回执
+        await sendSimpleMessage(bot_token, chatId, '🔎 正在查询订阅信息，请稍候...');
+
+        let count = null;
+        let userInfo = null;
+        let debug = null;
+
+        if (misubBase) {
+            const base = misubBase.replace(/\/$/, '');
+            // 若 MiSub 需要鉴权，先登录换取 Cookie
+            let headers = { 'Content-Type': 'application/json' };
+            try {
+                if (misubAdminPassword) {
+                    const loginResp = await fetch(`${base}/api/login`, { method: 'POST', headers, body: JSON.stringify({ password: misubAdminPassword }) });
+                    if (loginResp.ok) {
+                        const setCookie = loginResp.headers.get('set-cookie');
+                        if (setCookie) {
+                            headers = { ...headers, 'Cookie': setCookie };
+                        }
+                    }
+                }
+            } catch {}
+            const [nodeCountResp, debugResp] = await Promise.all([
+                fetch(`${base}/api/node_count`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ url: subUrl })
+                }),
+                fetch(`${base}/api/debug_subscription`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ url: subUrl, userAgent: 'v2rayN/6.45' })
+                })
+            ]);
+
+            if (nodeCountResp && nodeCountResp.ok) {
+                try { const j = await nodeCountResp.json(); count = j.count; userInfo = j.userInfo || null; } catch {}
+            }
+            if (debugResp && debugResp.ok) {
+                try { debug = await debugResp.json(); } catch {}
+            }
+        }
+
+        // 若 MiSub 不可用或需要鉴权，走直连兜底解析
+        // 严格依赖 MiSub：不再自解析，若未得到数据则回显错误提示
+        if ((count === null && !userInfo) || !debug) {
+            await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：MiSub 未返回数据。请确认 MISUB_BASE 可访问，并已在 MiSub 前端“测试订阅/批量导入”可正常解析该链接。');
+            return new Response('OK');
+        }
+
+        // 构造展示
+        let used = null, total = null, remain = null, expire = null;
+        if (userInfo) {
+            const upload = Number(userInfo.upload || 0);
+            const download = Number(userInfo.download || 0);
+            used = upload + download;
+            total = Number(userInfo.total || 0);
+            remain = total > 0 ? Math.max(0, total - used) : null;
+            expire = userInfo.expire ? new Date(Number(userInfo.expire) * 1000) : null;
+        }
+
+        const percent = total && total > 0 ? (used / total) * 100 : null;
+        const bar = percent !== null ? createProgressBar(percent) : null;
+
+        const protocols = parseProtocolsFrom(debug?.processedContent, debug?.validNodes);
+        const sampleNames = (debug?.validNodes || []).map(decodeNodeName).filter(Boolean).slice(0, 3);
+        const countries = detectCountries(sampleNames);
+
+        const lines = [];
+        lines.push(`订阅域名: <code>${extractHostname(subUrl)}</code>`);
+        if (used !== null && total !== null) {
+            lines.push(`流量详情: ${formatBytes(used)} / ${formatBytes(total)}`);
+            if (percent !== null) lines.push(`使用进度: ${bar} ${percent.toFixed(1)}%`);
+            if (remain !== null) lines.push(`剩余可用: ${formatBytes(remain)}`);
+        }
+        if (expire) {
+            const cn = expire.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+            lines.push(`到期时间: ${cn}`);
+        } else if (userInfo && userInfo.expire === 0) {
+            lines.push('到期时间: 长期有效');
+        }
+        if (typeof count === 'number') lines.push(`节点总数: ${count}`);
+        if (protocols.length) lines.push(`协议类型: ${protocols.join(', ')}`);
+        if (countries.length) lines.push(`覆盖范围: ${countries.join('、')}`);
+        if (sampleNames.length) {
+            lines.push('示例节点:');
+            sampleNames.forEach(n => lines.push(n));
+        }
+
+        await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
+        return new Response('OK');
+    } catch (e) {
+        await sendSimpleMessage(bot_token, chatId, `❌ 查询失败：${e.message || '未知错误'}`);
+        return new Response('OK');
+    }
+}
+
+// 直连解析函数已移除（按用户要求仅使用 MiSub 数据）
+
 // 获取最新APP下载页信息
 async function getLatestAppRelease() {
     try {
@@ -74,6 +234,8 @@ export default {
         const token = env.TOKEN || "token";
         const bot_token = env.BOT_TOKEN || "8226743743:AAHfrc09vW8cxKHyU0q0YKPuCXrW1ICWdU0";
         const GROUP_ID = env.GROUP_ID || "-1002563172210";
+        const misubBase = env.MISUB_BASE || null; // MiSub 后端地址
+        const misubAdminPassword = env.MISUB_ADMIN_PASSWORD || null; // MiSub 管理密码，用于获取 Cookie
         const siteName = env.NEXT_PUBLIC_SITE_NAME || null;
         const url = new URL(request.url);
         const path = url.pathname;
@@ -97,7 +259,7 @@ export default {
 
         // 处理 Telegram Webhook
         if (request.method === 'POST') {
-            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName);
+            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword);
         }
 
         // 默认返回404错误页面（伪装）
@@ -357,7 +519,7 @@ async function isCommandForThisBot(text, bot_token) {
 }
 
 // 处理 Telegram Webhook
-async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName) {
+async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword) {
     try {
         const update = await request.json();
 
@@ -395,6 +557,13 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             // 处理 /state 命令
             if (normalizedText === '/state') {
                 return await handleStateCommand(bot_token, userId, chatId, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName);
+            }
+
+            // 订阅查询：无需权限，检测文本中是否包含 http/https 链接
+            const urlMatch = normalizedText.match(/https?:\/\/[^\s]+/i);
+            if (urlMatch) {
+                const subUrl = urlMatch[0];
+                return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword);
             }
         }
 
@@ -895,6 +1064,19 @@ async function sendMessage(bot_token, chatId, text, moontvUrl = null, siteName =
         });
     } catch (error) {
         console.error('Error sending message:', error);
+    }
+}
+
+// 纯文本快速发送（无按钮）
+async function sendSimpleMessage(bot_token, chatId, text) {
+    try {
+        await fetch(`https://api.telegram.org/bot${bot_token}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+            body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+        });
+    } catch (e) {
+        console.error('Error sending simple message:', e);
     }
 }
 
