@@ -108,6 +108,21 @@ function renderBarChart(items, total, width = 12) {
     return lines;
 }
 
+function extractCountry(name) {
+    if (!name) return null;
+    const tokens = [
+        ['中国','中国'],['香港','香港'],['台湾','台湾'],['美国','美国'],['日本','日本'],['新加坡','新加坡'],
+        ['韩国','韩国'],['德国','德国'],['英国','英国'],['法国','法国'],['加拿大','加拿大'],['澳大利亚','澳大利亚'],
+        ['俄罗斯','俄罗斯'],['印度','印度'],['荷兰','荷兰'],['瑞士','瑞士'],['瑞典','瑞典'],['挪威','挪威'],
+        ['丹麦','丹麦'],['芬兰','芬兰'],['土耳其','土耳其'],['越南','越南'],['泰国','泰国'],['马来西亚','马来西亚'],
+        ['菲律宾','菲律宾'],['印度尼西亚','印尼'],['阿联酋','阿联酋'],['墨西哥','墨西哥'],['巴西','巴西'],['阿根廷','阿根廷']
+    ];
+    for (const [kw, label] of tokens) {
+        if (String(name).includes(kw)) return label;
+    }
+    return null;
+}
+
 function sampleArray(arr, n) {
     if (!Array.isArray(arr) || arr.length === 0 || n <= 0) return [];
     const copy = arr.slice();
@@ -198,6 +213,9 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         let nodeSampleNames = [];
         let protocols = [];
         let sampledCountries = [];
+        let countryListAll = [];
+        let allNodeNames = [];
+        let protocolList = [];
         if (substoreBase && substoreName) {
             try {
                 const urlParam = encodeURIComponent(subUrl);
@@ -212,14 +230,14 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                         if (Array.isArray(list) && list.length > 0) {
                             const jsonNames = list.map(i => i?.name).filter(Boolean);
                             const jsonTypes = list.map(i => i?.type).filter(Boolean);
-                            if (jsonTypes.length) {
-                                protocols = Array.from(new Set(jsonTypes.map(t => String(t).toUpperCase())));
-                            }
-                            if (jsonNames.length) {
-                                nodeSampleNames = sampleArray(jsonNames, 3);
-                                const countryNames = sampleArray(jsonNames, 5);
-                                sampledCountries = Array.from(new Set(detectCountries(countryNames)));
-                            }
+                            allNodeNames = jsonNames;
+                            protocolList = jsonTypes.map(t => String(t).toUpperCase());
+                            protocols = Array.from(new Set(protocolList));
+                            if (jsonNames.length) nodeSampleNames = sampleArray(jsonNames, 3);
+                            // 全量国家集合
+                            const countriesFull = jsonNames.map(extractCountry).filter(Boolean);
+                            countryListAll = countriesFull;
+                            sampledCountries = Array.from(new Set(countriesFull));
                             count = list.length;
                             parsedFromJson = true;
                         }
@@ -235,11 +253,13 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                         try { content = atob(b64.replace(/\s/g, '')); } catch { content = b64; }
                         const lines = content.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                         const nodeLines = lines.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                        const protoSet = new Set();
-                        nodeLines.forEach(l => { const m = l.match(/^(\w+):\/\//); if (m) protoSet.add(m[1].toLowerCase()); });
-                        protocols = Array.from(protoSet).map(p => p.toUpperCase());
+                        const types = nodeLines.map(l => {
+                            const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null;
+                        }).filter(Boolean);
+                        protocolList = types;
+                        protocols = Array.from(new Set(types));
                         count = nodeLines.length;
-                        const namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                        let namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
                         if (namesAll.length === 0) {
                             const reName = /#([^#\n\r]*)$/;
                             const fallback = nodeLines.map(l => {
@@ -247,9 +267,11 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             }).filter(Boolean);
                             namesAll.push(...fallback);
                         }
+                        allNodeNames = namesAll;
                         nodeSampleNames = sampleArray(namesAll, 3);
-                        const countryNames = sampleArray(namesAll, 5);
-                        sampledCountries = Array.from(new Set(detectCountries(countryNames)));
+                        const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                        countryListAll = countriesFull;
+                        sampledCountries = Array.from(new Set(countriesFull));
                     }
                 }
             } catch (e) {
@@ -283,8 +305,9 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         const countries = sampledCountries.length ? sampledCountries : detectCountries(sampleNames);
 
         // TopN: 协议/地区
-        const protocolTop = buildTopN(mergedProtocols.map(normalizeProtocolName), 5);
-        const countryTop = buildTopN(sampledCountries.length ? sampledCountries : detectCountries((debug?.validNodes || []).map(decodeNodeName)), 5);
+        const protoBase = protocolList.length ? protocolList.map(normalizeProtocolName) : mergedProtocols.map(normalizeProtocolName);
+        const protocolTop = buildTopN(protoBase, 5);
+        const countryTop = buildTopN(countryListAll, 5);
 
         const lines = [];
         lines.push(`订阅链接: <code>${subUrl}</code>`);
@@ -305,11 +328,11 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         if (countries.length) lines.push(`覆盖范围: ${countries.join('、')}`);
         if (protocolTop.length) {
             lines.push('协议占比:');
-            renderBarChart(protocolTop, mergedProtocols.length).forEach(l => lines.push(l));
+            renderBarChart(protocolTop, protoBase.length).forEach(l => lines.push(l));
         }
         if (countryTop.length) {
             lines.push('地区占比:');
-            renderBarChart(countryTop, (sampledCountries.length ? sampledCountries : countries).length).forEach(l => lines.push(l));
+            renderBarChart(countryTop, countryListAll.length).forEach(l => lines.push(l));
         }
         if (sampleNames.length) {
             lines.push('示例节点:');
