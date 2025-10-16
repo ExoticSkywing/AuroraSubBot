@@ -166,7 +166,8 @@ function normalizeProtocolName(protoRaw) {
 async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName) {
     try {
         // 先回执
-        await sendSimpleMessage(bot_token, chatId, '🔎 正在查询订阅信息，请稍候...');
+        const pending = await sendSimpleMessage(bot_token, chatId, '<b>🔎 正在查询订阅信息...</b>');
+        const pendingMessageId = pending?.result?.message_id;
 
         let count = null;
         let userInfo = null;
@@ -310,38 +311,43 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         const countryTop = buildTopN(countryListAll, 5);
 
         const lines = [];
-        lines.push(`订阅链接: <code>${subUrl}</code>`);
+        lines.push(`<b>订阅链接</b>: <code>${subUrl}</code>`);
         if (used !== null && total !== null) {
-            lines.push(`流量详情: ${formatBytes(used)} / ${formatBytes(total)}`);
-            if (percent !== null) lines.push(`使用进度: ${bar} ${percent.toFixed(1)}%`);
-            if (remain !== null) lines.push(`剩余可用: ${formatBytes(remain)}`);
+            lines.push(`<b>流量详情</b>: ${formatBytes(used)} / ${formatBytes(total)}`);
+            if (percent !== null) lines.push(`<b>使用进度</b>: ${bar} ${percent.toFixed(1)}%`);
+            if (remain !== null) lines.push(`<b>剩余可用</b>: ${formatBytes(remain)}`);
         }
         if (expire) {
             const cn = expire.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
             const daysLeft = Math.ceil((expire.getTime() - Date.now()) / (24 * 3600 * 1000));
-            lines.push(`到期时间: ${cn}（剩余 ${daysLeft} 天）`);
+            lines.push(`<b>到期时间</b>: ${cn}（剩余 ${daysLeft} 天）`);
         } else if (userInfo && userInfo.expire === 0) {
-            lines.push('到期时间: 长期有效');
+            lines.push('<b>到期时间</b>: 长期有效');
         }
-        if (typeof count === 'number') lines.push(`节点总数: ${count}`);
-        if (mergedProtocols.length) lines.push(`协议类型: ${Array.from(new Set(mergedProtocols.map(normalizeProtocolName))).join(', ')}`);
-        if (countries.length) lines.push(`覆盖范围: ${countries.join('、')}`);
+        if (typeof count === 'number') lines.push(`<b>节点总数</b>: ${count}`);
+        if (mergedProtocols.length) lines.push(`<b>协议类型</b>: ${Array.from(new Set(mergedProtocols.map(normalizeProtocolName))).join(', ')}`);
+        if (countries.length) lines.push(`<b>覆盖范围</b>: ${countries.join('、')}`);
         if (protocolTop.length) {
-            lines.push('协议占比:');
+            lines.push('<b>协议占比</b>:');
             renderBarChart(protocolTop, protoBase.length).forEach(l => lines.push(l));
         }
         if (countryTop.length) {
-            lines.push('地区占比:');
+            lines.push('<b>地区占比</b>:');
             renderBarChart(countryTop, countryListAll.length).forEach(l => lines.push(l));
         }
         if (sampleNames.length) {
-            lines.push('示例节点:');
-            sampleNames.forEach(n => lines.push(n));
+            lines.push('<b>示例节点</b>:');
+            sampleNames.filter(n => !/\|\s*0x\s*$/i.test(n)).forEach(n => lines.push(n));
         } else {
-            lines.push('示例节点: 暂无可用名称');
+            lines.push('<b>示例节点</b>: 暂无可用名称');
         }
 
-        await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
+        const finalText = lines.join('\n');
+        if (pendingMessageId) {
+            await editMessage(bot_token, chatId, pendingMessageId, finalText);
+        } else {
+            await sendSimpleMessage(bot_token, chatId, finalText);
+        }
         return new Response('OK');
     } catch (e) {
         await sendSimpleMessage(bot_token, chatId, `❌ 查询失败：${e.message || '未知错误'}`);
@@ -1223,13 +1229,39 @@ async function sendMessage(bot_token, chatId, text, moontvUrl = null, siteName =
 // 纯文本快速发送（无按钮）
 async function sendSimpleMessage(bot_token, chatId, text) {
     try {
-        await fetch(`https://api.telegram.org/bot${bot_token}/sendMessage`, {
+        const resp = await fetch(`https://api.telegram.org/bot${bot_token}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
             body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
         });
+        return await resp.json();
     } catch (e) {
         console.error('Error sending simple message:', e);
+        return null;
+    }
+}
+
+async function editMessage(bot_token, chatId, messageId, text) {
+    try {
+        await fetch(`https://api.telegram.org/bot${bot_token}/editMessageText`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+            body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' })
+        });
+    } catch (e) {
+        console.error('Error editing message:', e);
+    }
+}
+
+async function deleteMessage(bot_token, chatId, messageId) {
+    try {
+        await fetch(`https://api.telegram.org/bot${bot_token}/deleteMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+            body: JSON.stringify({ chat_id: chatId, message_id: messageId })
+        });
+    } catch (e) {
+        console.error('Error deleting message:', e);
     }
 }
 
