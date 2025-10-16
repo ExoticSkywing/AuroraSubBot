@@ -621,6 +621,7 @@ export default {
         const ADMIN_TG_ID = env.ADMIN_TG_ID ? Number(env.ADMIN_TG_ID) : null; // 仅管理员可用命令
         const ADMIN_TOKEN = env.ADMIN_TOKEN || token; // 受保护HTTP接口的令牌
         const url = new URL(request.url);
+        const PUBLIC_BASE = env.PUBLIC_BASE || `${url.protocol}//${url.host}`;
         const path = url.pathname;
 
         // 处理 Webhook 初始化路径
@@ -640,6 +641,11 @@ export default {
             }
         }
 
+        // H5 中转：/open?app=&scheme=&fallback=
+        if (path === '/open' && request.method === 'GET') {
+            return await handleOpenRedirect(url);
+        }
+
         // 管理员：Top-N 高质量订阅（受保护）
         if (path === '/quality/top' && request.method === 'GET') {
             const params = new URLSearchParams(url.search);
@@ -652,7 +658,7 @@ export default {
 
         // 处理 Telegram Webhook
         if (request.method === 'POST') {
-            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID);
+            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID, PUBLIC_BASE);
         }
 
         // 默认返回404错误页面（伪装）
@@ -681,6 +687,29 @@ export default {
         }
     }
 };
+
+// /open 中转：通过 https 触发 app scheme，失败回退到 fallback
+async function handleOpenRedirect(url) {
+    const params = new URLSearchParams(url.search);
+    const scheme = params.get('scheme');
+    const fallback = params.get('fallback');
+    const app = params.get('app') || 'App';
+    const html = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>打开 ${app}</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;line-height:1.45;padding:20px}a{color:#1677ff;text-decoration:none}</style>
+</head><body>
+<h3>正在打开 ${app}…</h3>
+<p>若未自动跳转，请 <a id="open" href="${scheme||''}">点此打开</a> 或 <a id="fb" href="${fallback||'#'}">使用备用链接</a>。</p>
+<script>
+  (function(){
+    try { if (${JSON.stringify(!!scheme)}) window.location.href = ${JSON.stringify('') } || '${scheme}'; } catch(e) {}
+    setTimeout(function(){ try{ window.location.href = '${fallback||'#'}'; }catch(e){} }, 1500);
+  })();
+</script>
+</body></html>`;
+    return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+}
 
 // 处理检测端点
 async function handleCheckEndpoint(apiUrl, username, password, KV) {
@@ -934,7 +963,7 @@ async function isCommandForThisBot(text, bot_token) {
 }
 
 // 处理 Telegram Webhook
-async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID = null) {
+async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID = null, PUBLIC_BASE = null) {
     try {
         const update = await request.json();
 
@@ -968,12 +997,17 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
                     try { originalSubUrl = await KV.get(key); } catch {}
                 }
                 if (originalSubUrl && substoreBase && substoreName) {
-                    const markup = buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl);
-                    await editMessageMarkup(bot_token, chatId, messageId, markup.inline_keyboard);
+                    // 发送单独的新消息：包含各客户端的中转https链接
+                    const deepLinksText = buildOpenPageSection(PUBLIC_BASE, substoreBase, substoreName, originalSubUrl, extractHostname(originalSubUrl) || '订阅');
+                    if (deepLinksText) {
+                        await sendSimpleMessage(bot_token, chatId, deepLinksText);
+                    }
+                    // 移除原消息的内联按钮
+                    await editMessageMarkup(bot_token, chatId, messageId, []);
                 }
                 // 清理一次性临时键
                 try { if (KV) await KV.delete(`convert:${chatId}:${messageId}`); } catch {}
-                await answerCallback(bot_token, cq.id, '已生成转换按钮');
+                await answerCallback(bot_token, cq.id, '已发送一键导入链接');
                 return new Response('OK');
             }
 
@@ -1656,10 +1690,42 @@ function buildCollapsedConvertKeyboard() {
     };
 }
 
-function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl) {
+function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl, displayName = '订阅') {
     const base = substoreBase.replace(/\/$/, '');
     const urlParam = encodeURIComponent(originalSubUrl);
-    const mk = (label, target) => ({ text: label, url: `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}` });
+    const relay = (target) => `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}&noCache=true`;
+    const enc = encodeURIComponent;
+    const b64url = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+
+    // 深度链接（尽量直接拉起客户端）
+    const links = {
+        // iOS: Loon（部分版本支持）
+        loon: `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+        // iOS: Shadowrocket 使用 base64(url) 的 sub:// 方案
+        shadowrocket: `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
+        // iOS: Quantumult X
+        quanx: `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
+        // iOS/macOS: Surge
+        surge: `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
+        'surge-mac': `surge-mac:///install-config?url=${enc(relay('surge-mac'))}&name=${enc(displayName)}`,
+        // iOS: Stash（Clash 格式）
+        stash: `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
+        // iOS: Egern（Clash 格式）
+        egern: `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
+        // iOS/Android: sing-box
+        singbox: `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
+        // Android: V2RayNG（不同版本可能差异，提供常见 scheme）
+        v2ray: `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
+        // 通用 URI（浏览器可见，用于兜底/分享）
+        uri: relay('uri')
+    };
+
+    const mk = (label, key) => {
+        const href = links[key] || relay(key);
+        // Telegram 机器人内联按钮仅可靠支持 http/https 链接
+        const safeHref = /^https?:\/\//i.test(href) ? href : relay(key);
+        return { text: label, url: safeHref };
+    };
 
     // 排列：每行3个
     const row1 = [
@@ -1685,6 +1751,75 @@ function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl
     ];
 
     return { inline_keyboard: [row1, row2, row3, row4, row5] };
+}
+
+function buildDeepLinksSection(substoreBase, substoreName, originalSubUrl, displayName = '订阅') {
+    try {
+        const base = substoreBase.replace(/\/$/, '');
+        const urlParam = encodeURIComponent(originalSubUrl);
+        const relay = (target) => `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}&noCache=true`;
+        const enc = encodeURIComponent;
+        const b64url = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+
+        const links = {
+            'Loon': `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+            'Shadowrocket': `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
+            'Quantumult X': `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
+            'Surge': `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
+            'Surge(macOS)': `surge-mac:///install-config?url=${enc(relay('surge-mac'))}&name=${enc(displayName)}`,
+            'Stash': `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
+            'Egern': `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
+            'sing-box': `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
+            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
+            '通用订阅(URI)': relay('uri')
+        };
+
+        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray','通用订阅(URI)'];
+        const lines = order.map(name => {
+            const href = links[name];
+            // 用超链接包装名称，点击即使用深链/或 http 回落
+            return `• <a href="${href}">${name}</a>`;
+        });
+        return ['\n<b>客户端一键导入</b>：', ...lines].join('\n');
+    } catch {
+        return '';
+    }
+}
+
+function buildOpenPageSection(publicBase, substoreBase, substoreName, originalSubUrl, displayName = '订阅') {
+    try {
+        const base = substoreBase.replace(/\/$/, '');
+        const pb = publicBase.replace(/\/$/, '');
+        const urlParam = encodeURIComponent(originalSubUrl);
+        const relay = (target) => `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}&noCache=true`;
+        const enc = encodeURIComponent;
+        const b64url = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+
+        // 目标 app scheme（由中转页触发）
+        const schemes = {
+            'Loon': `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+            'Shadowrocket': `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
+            'Quantumult X': `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
+            'Surge': `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
+            'Surge(macOS)': `surge-mac:///install-config?url=${enc(relay('surge-mac'))}&name=${enc(displayName)}`,
+            'Stash': `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
+            'Egern': `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
+            'sing-box': `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
+            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
+            '通用订阅(URI)': relay('uri')
+        };
+
+        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray','通用订阅(URI)'];
+        const lines = order.map(name => {
+            const scheme = schemes[name];
+            const fallback = name === '通用订阅(URI)' ? scheme : relay('uri');
+            const openUrl = `${pb}/open?app=${enc(name)}&scheme=${enc(scheme)}&fallback=${enc(fallback)}`;
+            return `• <a href="${openUrl}">${name}</a>`;
+        });
+        return ['\n<b>客户端一键导入</b>：', ...lines].join('\n');
+    } catch {
+        return '';
+    }
 }
 
 // 获取Cookie函数
