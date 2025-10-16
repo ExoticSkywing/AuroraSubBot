@@ -163,7 +163,7 @@ function normalizeProtocolName(protoRaw) {
     return map[p] || p;
 }
 
-async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName) {
+async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, KV = null) {
     try {
         // 先回执
         const pending = await sendSimpleMessage(bot_token, chatId, '<b>🔎 正在查询订阅信息...</b>');
@@ -343,8 +343,19 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         }
 
         const finalText = lines.join('\n');
+        // 默认只附带“转换为客户端订阅”折叠按钮，用户需要时再展开
+        let replyMarkup = null;
+        if (substoreBase && substoreName) {
+            replyMarkup = buildCollapsedConvertKeyboard();
+            // 将原始订阅缓存到KV，供回调时读取（避免从文本解析失败）
+            try {
+                if (KV && pendingMessageId) {
+                    await KV.put(`convert:${chatId}:${pendingMessageId}`, subUrl, { expirationTtl: 3600 });
+                }
+            } catch {}
+        }
         if (pendingMessageId) {
-            await editMessage(bot_token, chatId, pendingMessageId, finalText);
+            await editMessage(bot_token, chatId, pendingMessageId, finalText, replyMarkup);
         } else {
             await sendSimpleMessage(bot_token, chatId, finalText);
         }
@@ -682,6 +693,57 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
     try {
         const update = await request.json();
 
+        // 回调按钮处理：展开/收起客户端转换按钮
+        if (update.callback_query) {
+            const cq = update.callback_query;
+            const data = cq.data || '';
+            const chatId = cq.message?.chat?.id;
+            const messageId = cq.message?.message_id;
+            if (!chatId || !messageId) {
+                return new Response('OK');
+            }
+
+            if (data === 'ask_convert') {
+                // 展示二次确认
+                const confirmKb = { inline_keyboard: [[{ text: '✅ 确认生成', callback_data: 'confirm_convert' }, { text: '❌ 取消', callback_data: 'collapse_convert' }]] };
+                await editMessageMarkup(bot_token, chatId, messageId, confirmKb.inline_keyboard);
+                await answerCallback(bot_token, cq.id, '请确认是否生成转换按钮');
+                return new Response('OK');
+            }
+
+            if (data === 'confirm_convert' || data === 'expand_convert') {
+                const text = cq.message?.text || '';
+                let originalSubUrl = null;
+                try {
+                    const m = text.match(/订阅链接[\s\S]*?<code>([^<]+)<\/code>/);
+                    if (m) originalSubUrl = m[1];
+                } catch {}
+                if (!originalSubUrl && KV) {
+                    const key = `convert:${chatId}:${messageId}`;
+                    try { originalSubUrl = await KV.get(key); } catch {}
+                }
+                if (originalSubUrl && substoreBase && substoreName) {
+                    const markup = buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl);
+                    await editMessageMarkup(bot_token, chatId, messageId, markup.inline_keyboard);
+                }
+                // 清理一次性临时键
+                try { if (KV) await KV.delete(`convert:${chatId}:${messageId}`); } catch {}
+                await answerCallback(bot_token, cq.id, '已生成转换按钮');
+                return new Response('OK');
+            }
+
+            if (data === 'collapse_convert') {
+                const markup = buildCollapsedConvertKeyboard();
+                await editMessageMarkup(bot_token, chatId, messageId, markup.inline_keyboard);
+                // 清理一次性临时键
+                try { if (KV) await KV.delete(`convert:${chatId}:${messageId}`); } catch {}
+                await answerCallback(bot_token, cq.id);
+                return new Response('OK');
+            }
+
+            return new Response('OK');
+        }
+
         if (update.message && update.message.text) {
             const message = update.message;
             const userId = message.from.id;
@@ -722,7 +784,7 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             const urlMatch = normalizedText.match(/https?:\/\/[^\s]+/i);
             if (urlMatch) {
                 const subUrl = urlMatch[0];
-                return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName);
+                return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, KV);
             }
         }
 
@@ -1241,12 +1303,16 @@ async function sendSimpleMessage(bot_token, chatId, text) {
     }
 }
 
-async function editMessage(bot_token, chatId, messageId, text) {
+async function editMessage(bot_token, chatId, messageId, text, replyMarkup = null) {
     try {
+        const body = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
+        if (replyMarkup) {
+            body.reply_markup = replyMarkup;
+        }
         await fetch(`https://api.telegram.org/bot${bot_token}/editMessageText`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
-            body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' })
+            body: JSON.stringify(body)
         });
     } catch (e) {
         console.error('Error editing message:', e);
@@ -1263,6 +1329,75 @@ async function deleteMessage(bot_token, chatId, messageId) {
     } catch (e) {
         console.error('Error deleting message:', e);
     }
+}
+
+// 仅更新内联键盘
+async function editMessageMarkup(bot_token, chatId, messageId, inlineKeyboard) {
+    try {
+        await fetch(`https://api.telegram.org/bot${bot_token}/editMessageReplyMarkup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+            body: JSON.stringify({
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: { inline_keyboard: inlineKeyboard }
+            })
+        });
+    } catch (e) {
+        console.error('Error editing message markup:', e);
+    }
+}
+
+async function answerCallback(bot_token, callbackQueryId, text = null, showAlert = false) {
+    try {
+        const payload = { callback_query_id: callbackQueryId };
+        if (text) payload.text = text;
+        if (showAlert) payload.show_alert = true;
+        await fetch(`https://api.telegram.org/bot${bot_token}/answerCallbackQuery`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+            body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.error('Error answering callback:', e);
+    }
+}
+
+function buildCollapsedConvertKeyboard() {
+    return {
+        inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|小火箭|qx等） ▶️', callback_data: 'ask_convert' }]]
+    };
+}
+
+function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl) {
+    const base = substoreBase.replace(/\/$/, '');
+    const urlParam = encodeURIComponent(originalSubUrl);
+    const mk = (label, target) => ({ text: label, url: `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}` });
+
+    // 排列：每行3个
+    const row1 = [
+        mk('Loon', 'loon'),
+        mk('Shadowrocket', 'shadowrocket'),
+        mk('Quantumult X', 'quanx')
+    ];
+    const row2 = [
+        mk('Surge', 'surge'),
+        mk('Surge(macOS)', 'surge-mac'),
+        mk('Stash', 'stash')
+    ];
+    const row3 = [
+        mk('Egern', 'egern'),
+        mk('sing-box', 'singbox'),
+        mk('V2Ray', 'v2ray')
+    ];
+    const row4 = [
+        mk('通用订阅(URI)', 'uri')
+    ];
+    const row5 = [
+        { text: '◀️ 收起', callback_data: 'collapse_convert' }
+    ];
+
+    return { inline_keyboard: [row1, row2, row3, row4, row5] };
 }
 
 // 获取Cookie函数
