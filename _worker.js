@@ -67,18 +67,10 @@ function decodeNodeName(link) {
 }
 
 function detectCountries(names) {
-    const tokens = [
-        ['中国','中国'],['香港','香港'],['台湾','台湾'],['美国','美国'],['日本','日本'],['新加坡','新加坡'],
-        ['韩国','韩国'],['德国','德国'],['英国','英国'],['法国','法国'],['加拿大','加拿大'],['澳大利亚','澳大利亚'],
-        ['俄罗斯','俄罗斯'],['印度','印度'],['荷兰','荷兰'],['瑞士','瑞士'],['瑞典','瑞典'],['挪威','挪威'],
-        ['丹麦','丹麦'],['芬兰','芬兰'],['土耳其','土耳其'],['越南','越南'],['泰国','泰国'],['马来西亚','马来西亚'],
-        ['菲律宾','菲律宾'],['印度尼西亚','印尼'],['阿联酋','阿联酋'],['墨西哥','墨西哥'],['巴西','巴西'],['阿根廷','阿根廷']
-    ];
     const found = new Set();
-    for (const name of names) {
-        for (const [kw, label] of tokens) {
-            if (name && name.includes(kw)) found.add(label);
-        }
+    for (const name of names || []) {
+        const c = extractCountry(name);
+        if (c) found.add(c);
     }
     return Array.from(found);
 }
@@ -110,15 +102,27 @@ function renderBarChart(items, total, width = 12) {
 
 function extractCountry(name) {
     if (!name) return null;
-    const tokens = [
-        ['中国','中国'],['香港','香港'],['台湾','台湾'],['美国','美国'],['日本','日本'],['新加坡','新加坡'],
-        ['韩国','韩国'],['德国','德国'],['英国','英国'],['法国','法国'],['加拿大','加拿大'],['澳大利亚','澳大利亚'],
-        ['俄罗斯','俄罗斯'],['印度','印度'],['荷兰','荷兰'],['瑞士','瑞士'],['瑞典','瑞典'],['挪威','挪威'],
-        ['丹麦','丹麦'],['芬兰','芬兰'],['土耳其','土耳其'],['越南','越南'],['泰国','泰国'],['马来西亚','马来西亚'],
-        ['菲律宾','菲律宾'],['印度尼西亚','印尼'],['阿联酋','阿联酋'],['墨西哥','墨西哥'],['巴西','巴西'],['阿根廷','阿根廷']
+    const s = String(name);
+    const rules = [
+        ['香港', /(香港|\bHK\b|HKG|🇭🇰)/i],
+        ['日本', /(日本|\bJP\b|🇯🇵|东京|大阪|名古屋|札幌|福冈|冲绳|神户|Tokyo|Osaka|Nagoya|Sapporo|Fukuoka|Okinawa|Kobe|NRT|HND)/i],
+        ['韩国', /(韩国|\bKR\b|🇰🇷|首尔|釜山|仁川|大邱|光州|春川|水原|Seoul|Busan|Incheon|Daegu|Gwangju|Chuncheon|Suwon|ICN|GMP)/i],
+        ['中国', /(中国|\bCN\b|🇨🇳|北京|上海|广州|深圳|杭州|南京|成都|西安|重庆|天津)/i],
+        ['台湾', /(台湾|\bTW\b|🇹🇼|台北|台中|高雄|新北|桃园|TPE|KHH)/i],
+        ['美国', /(美国|\bUS(A)?\b|🇺🇸|洛杉矶|芝加哥|达拉斯|纽约|西雅图|硅谷|圣何塞|拉斯维加斯|迈阿密|波特兰|Seattle|Los\s*Angeles|LA\b|Chicago|Dallas|New\s*York|NYC|San\s*Jose|Las\s*Vegas|Miami|Portland|SJC|LAX|SEA|DFW)/i],
+        ['新加坡', /(新加坡|\bSG\b|🇸🇬|Singapore)/i],
+        ['德国', /(德国|\bDE\b|🇩🇪|法兰克福|慕尼黑|柏林|Frankfurt|Munich|Berlin|FRA|MUC|BER)/i],
+        ['英国', /(英国|\bUK\b|🇬🇧|伦敦|London|曼彻斯特|Manchester|\bLON\b|LHR)/i],
+        ['法国', /(法国|\bFR\b|🇫🇷|巴黎|Paris|Marseille|CDG)/i],
+        ['荷兰', /(荷兰|\bNL\b|🇳🇱|阿姆斯特丹|Amsterdam|AMS)/i],
+        ['巴西', /(巴西|\bBR\b|🇧🇷|圣保罗|Sao\s*Paulo|GRU)/i],
+        ['澳大利亚', /(澳大利亚|澳洲|\bAU\b|🇦🇺|悉尼|墨尔本|Sydney|Melbourne|SYD|MEL)/i],
+        ['墨西哥', /(墨西哥|\bMX\b|🇲🇽|墨西哥城|Monterrey|Guadalajara|MEX)/i],
+        ['土耳其', /(土耳其|\bTR\b|🇹🇷|伊斯坦布尔|Istanbul|IST)/i],
+        ['俄罗斯', /(俄罗斯|\bRU\b|🇷🇺|莫斯科|圣彼得堡|Moscow|Saint\s*Petersburg|MSK|LED)/i]
     ];
-    for (const [kw, label] of tokens) {
-        if (String(name).includes(kw)) return label;
+    for (const [label, re] of rules) {
+        if (re.test(s)) return label;
     }
     return null;
 }
@@ -161,6 +165,139 @@ function normalizeProtocolName(protoRaw) {
         'SOCKS5': 'SOCKS5'
     };
     return map[p] || p;
+}
+
+// 计算简单指纹（SHA-256(secret + '|' + text)）
+async function fingerprint(secret, text) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(`${secret}|${text}`);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    const bytes = Array.from(new Uint8Array(digest));
+    return bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getDomainFromUrl(u) {
+    try { return new URL(u).hostname; } catch { return null; }
+}
+
+// AES-GCM 加解密（使用 secret 派生 256-bit key）
+async function deriveAesKey(secret) {
+    const enc = new TextEncoder();
+    const hash = await crypto.subtle.digest('SHA-256', enc.encode(secret));
+    return await crypto.subtle.importKey('raw', hash, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+function abToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+
+function base64ToAb(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+}
+
+async function encryptText(secret, plaintext) {
+    const key = await deriveAesKey(secret);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const enc = new TextEncoder().encode(plaintext);
+    const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc);
+    // 返回 iv:cipher 的base64
+    return `${abToBase64(iv)}:${abToBase64(cipher)}`;
+}
+
+async function decryptText(secret, payload) {
+    try {
+        const [ivB64, cipherB64] = String(payload).split(':');
+        const key = await deriveAesKey(secret);
+        const iv = new Uint8Array(base64ToAb(ivB64));
+        const cipher = base64ToAb(cipherB64);
+        const plainAb = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+        return new TextDecoder().decode(plainAb);
+    } catch {
+        return null;
+    }
+}
+
+// JP/KR 识别（国旗/国家/城市）
+function detectHasJapanAndKorea(names, coverage = []) {
+    const pool = [];
+    if (Array.isArray(names)) pool.push(...names);
+    if (Array.isArray(coverage)) pool.push(...coverage);
+    const text = pool.join(' ');
+    const jpTokens = ['日本', 'JP', '🇯🇵', '东京', '大阪', '名古屋', '札幌', '福冈', '冲绳', '神户', 'Tokyo', 'Osaka'];
+    const krTokens = ['韩国', 'KR', '🇰🇷', '首尔', '釜山', '仁川', '大邱', '光州', '春川', '水原', 'Seoul', 'Busan'];
+    const hasJp = jpTokens.some(t => text.includes(t));
+    const hasKr = krTokens.some(t => text.includes(t));
+    return hasJp && hasKr;
+}
+
+function detectIspQualityKeywords(text) {
+    if (!text) return false;
+    const re = /(家宽|家庭宽带|家用宽带|住宅|原生|专线|IEPL|IPLC|BGP|精品|原生IP)/i;
+    return re.test(text);
+}
+
+function detectSpamKeywords(text) {
+    if (!text) return false;
+    const re = /(频道|telegram|电报|\btg\b|@)/i;
+    return re.test(text);
+}
+
+function hasResetRemainderText(text) {
+    if (!text) return false;
+    const re = /(重置剩余|距离下次重置).{0,10}?(\d+)\s*天/i;
+    return re.test(text);
+}
+
+// 质量评估
+function evaluateQualityGate({ total, remain, daysLeft, nodeCount, unlimited = false, longterm = false }) {
+    const totalOk = unlimited || (typeof total === 'number' && total >= 500 * 1024 * 1024 * 1024);
+    const remainOk = unlimited || (typeof remain === 'number' && remain >= 300 * 1024 * 1024 * 1024);
+    const daysOk = longterm || (typeof daysLeft === 'number' && daysLeft >= 16);
+    const nodesOk = typeof nodeCount === 'number' && nodeCount >= 5 && nodeCount <= 100;
+    return totalOk && remainOk && daysOk && nodesOk;
+}
+
+function evaluateQualityScore(signals) {
+    let score = 0;
+    if (signals.resetHint) score += 0.30;
+    if (signals.jpkrBoth) score += 0.25;
+    if (signals.ispQuality) score += 0.30;
+    if (signals.spam) score -= 0.30;
+    if (score < 0) score = 0; if (score > 1) score = 1;
+    return score;
+}
+
+// 读取Top-N 高质量订阅
+async function getTopQualitySubs(KV, n, secret) {
+    try {
+        // Cloudflare KV 不支持前缀列举；此处简化：维护一张索引（可后续增强为 list/scan）
+        const idxJson = await KV.get('sub:index');
+        const idx = idxJson ? JSON.parse(idxJson) : [];
+        const now = Date.now();
+        const items = [];
+        for (const key of idx) {
+            const val = await KV.get(key);
+            if (!val) continue;
+            try {
+                const obj = JSON.parse(val);
+                // 只取 accept 或最近30天
+                if (obj && (obj.decision === 'accept' || (now - (obj.last_seen||0) <= 30*24*3600*1000))) {
+                    const urlPlain = await decryptText(secret, obj.url_enc);
+                    items.push({ ...obj, url_plain: urlPlain });
+                }
+            } catch {}
+        }
+        items.sort((a,b) => (b.quality_score||0) - (a.quality_score||0));
+        return items.slice(0, n);
+    } catch {
+        return [];
+    }
 }
 
 async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, KV = null) {
@@ -343,6 +480,80 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         }
 
         const finalText = lines.join('\n');
+
+        // ===== 质量评分与KV存储（黑名单命中则跳过入库） =====
+        try {
+            const domain = getDomainFromUrl(subUrl);
+            const adminSecret = siteName || 'MoonTV';
+            const blKey = domain ? `bl:domain:${domain}` : null;
+            const isBlacklisted = (KV && blKey) ? await KV.get(blKey) : null;
+
+            if (!isBlacklisted && KV) {
+                const unlimited = total === null || total === 0; // 视为未知或无限
+                const longterm = !!(userInfo && userInfo.expire === 0);
+                const gateOk = evaluateQualityGate({
+                    total,
+                    remain,
+                    daysLeft: expire ? Math.ceil((expire.getTime() - Date.now()) / (24 * 3600 * 1000)) : null,
+                    nodeCount: typeof count === 'number' ? count : null,
+                    unlimited,
+                    longterm
+                });
+
+                if (gateOk) {
+                    const poolText = `${finalText}\n${(debug?.processedContent || '')}`;
+                    // 结构化优先：重置/天数直接用 expire 推断
+                    const daysLeftStruct = expire ? Math.ceil((expire.getTime() - Date.now()) / (24 * 3600 * 1000)) : (userInfo && userInfo.expire === 0 ? 9999 : null);
+                    const resetHint = typeof daysLeftStruct === 'number' && daysLeftStruct >= 1;
+                    // ISP/引流仅在节点名里匹配
+                    const ispQuality = detectIspQualityKeywords((allNodeNames || []).join(' '));
+                    const spam = detectSpamKeywords((allNodeNames || []).join(' '));
+                    // JP+KR：节点名 + 覆盖范围
+                    const jpkrBoth = detectHasJapanAndKorea(allNodeNames || [], countries || []);
+                    const score = evaluateQualityScore({ resetHint, ispQuality, spam, jpkrBoth });
+
+                    const urlHash = await fingerprint(adminSecret, subUrl);
+                    const encUrl = await encryptText(adminSecret, subUrl);
+                    const summary = {
+                        provider_domain: domain,
+                        url_hash: urlHash,
+                        url_enc: encUrl,
+                        created_at: Date.now(),
+                        last_seen: Date.now(),
+                        total, remain, used,
+                        days_left: expire ? Math.ceil((expire.getTime() - Date.now()) / (24 * 3600 * 1000)) : (userInfo && userInfo.expire === 0 ? 9999 : null),
+                        node_count: count,
+                        jpkr_both: jpkrBoth,
+                        reset_hint: resetHint,
+                        isp_quality: ispQuality,
+                        spam,
+                        quality_score: score,
+                        reasons: {
+                            reset_hint: resetHint,
+                            jpkr_both: jpkrBoth,
+                            isp_quality: ispQuality,
+                            spam
+                        },
+                        decision: score >= 0.6 ? 'accept' : 'reject'
+                    };
+                    const key = `sub:${urlHash}`;
+                    const ttl = summary.decision === 'accept' ? 30 * 24 * 3600 : 24 * 3600;
+                    await KV.put(key, JSON.stringify(summary), { expirationTtl: ttl });
+                    // 维护索引，便于 Top-N 浏览（简易实现）
+                    try {
+                        const idxJson = await KV.get('sub:index');
+                        const idx = idxJson ? JSON.parse(idxJson) : [];
+                        if (!idx.includes(key)) {
+                            idx.unshift(key);
+                            // 最多保留 500 条索引
+                            await KV.put('sub:index', JSON.stringify(idx.slice(0, 500)), { expirationTtl: 60 * 24 * 3600 });
+                        }
+                    } catch {}
+                }
+            }
+        } catch (qe) {
+            console.log('质量评分存储异常:', qe?.message || qe);
+        }
         // 默认只附带“转换为客户端订阅”折叠按钮，用户需要时再展开
         let replyMarkup = null;
         if (substoreBase && substoreName) {
@@ -407,6 +618,8 @@ export default {
         const substoreBase = env.SUBSTORE_BASE || null; // Sub-Store 后端地址
         const substoreName = env.SUBSTORE_NAME || 'relay'; // Sub-Store 订阅名
         const siteName = env.NEXT_PUBLIC_SITE_NAME || null;
+        const ADMIN_TG_ID = env.ADMIN_TG_ID ? Number(env.ADMIN_TG_ID) : null; // 仅管理员可用命令
+        const ADMIN_TOKEN = env.ADMIN_TOKEN || token; // 受保护HTTP接口的令牌
         const url = new URL(request.url);
         const path = url.pathname;
 
@@ -427,14 +640,46 @@ export default {
             }
         }
 
+        // 管理员：Top-N 高质量订阅（受保护）
+        if (path === '/quality/top' && request.method === 'GET') {
+            const params = new URLSearchParams(url.search);
+            const t = params.get('token');
+            const n = Math.min(20, Math.max(1, Number(params.get('n') || '10')));
+            if (t !== ADMIN_TOKEN) return new Response('Forbidden', { status: 403 });
+            const list = await getTopQualitySubs(env.KV, n, siteName || 'MoonTV');
+            return new Response(JSON.stringify({ ok: true, top: list }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+        }
+
         // 处理 Telegram Webhook
         if (request.method === 'POST') {
-            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName);
+            return await handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, env.KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID);
         }
 
         // 默认返回404错误页面（伪装）
         return new Response("Not Found", { status: 404 });
     },
+    // 每日定时任务（需在Cloudflare中配置Cron触发）
+    async scheduled(event, env, ctx) {
+        try {
+            const adminId = env.ADMIN_TG_ID ? Number(env.ADMIN_TG_ID) : null;
+            if (!adminId || !env.BOT_TOKEN) return;
+            const top = await getTopQualitySubs(env.KV, 10, env.NEXT_PUBLIC_SITE_NAME || 'MoonTV');
+            if (!top || top.length === 0) return;
+            const lines = [];
+            lines.push(`📊 高质量订阅 Top ${top.length}`);
+            top.forEach((s, idx) => {
+                lines.push(`${idx + 1}. ${s.provider_domain} 评分:${(s.quality_score||0).toFixed(2)} 节点:${s.node_count}`);
+            });
+            lines.push('\n如需查看原始URL，请使用 /quality top 命令或管理接口。');
+            await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: adminId, text: lines.join('\n') })
+            });
+        } catch (e) {
+            console.log('scheduled error', e?.message || e);
+        }
+    }
 };
 
 // 处理检测端点
@@ -689,7 +934,7 @@ async function isCommandForThisBot(text, bot_token) {
 }
 
 // 处理 Telegram Webhook
-async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName) {
+async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, ADMIN_TG_ID = null) {
     try {
         const update = await request.json();
 
@@ -749,9 +994,51 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             const userId = message.from.id;
             const chatId = message.chat.id;
             const text = message.text;
-
-            // 检查命令是否是发给当前机器人的
+            // 预先规范化文本，供后续管理员命令与普通命令共用
             const { isForThisBot, normalizedText } = await isCommandForThisBot(text, bot_token);
+            // 管理员私有命令：黑名单与Top-N
+            if (ADMIN_TG_ID && userId === ADMIN_TG_ID) {
+                if (normalizedText.startsWith('/ban ')) {
+                    const domain = normalizedText.substring(5).trim();
+                    if (domain) {
+                        await KV.put(`bl:domain:${domain}`, '1', { expirationTtl: 365*24*3600 });
+                        await sendSimpleMessage(bot_token, chatId, `✅ 已加入域名黑名单：<code>${domain}</code>`);
+                        return new Response('OK');
+                    }
+                }
+                if (normalizedText.startsWith('/unban ')) {
+                    const domain = normalizedText.substring(7).trim();
+                    if (domain) {
+                        await KV.delete(`bl:domain:${domain}`);
+                        await sendSimpleMessage(bot_token, chatId, `✅ 已移除域名黑名单：<code>${domain}</code>`);
+                        return new Response('OK');
+                    }
+                }
+                if (normalizedText.startsWith('/quality top')) {
+                    const parts = normalizedText.split(' ').filter(Boolean);
+                    const n = parts.length >= 3 ? Math.min(20, Math.max(1, Number(parts[2]) || 10)) : 10;
+                    const list = await getTopQualitySubs(KV, n, siteName || 'MoonTV');
+                    if (!list || list.length === 0) {
+                        await sendSimpleMessage(bot_token, chatId, '暂无高质量订阅记录');
+                        return new Response('OK');
+                    }
+                    const lines = [];
+                    lines.push(`📊 高质量订阅 Top ${list.length}`);
+                    list.forEach((s, idx) => {
+                        const rs = s.reasons || {};
+                        const reasonText = [
+                            rs.reset_hint ? '重置✓' : null,
+                            rs.jpkr_both ? '日+韩✓' : null,
+                            rs.isp_quality ? '家宽/专线✓' : null,
+                            rs.spam ? '引流×' : null
+                        ].filter(Boolean).join('，');
+                        lines.push(`${idx + 1}. ${s.provider_domain} 评分:${(s.quality_score||0).toFixed(2)} 节点:${s.node_count}${reasonText? ' ｜'+reasonText: ''}`);
+                        lines.push(`URL: ${s.url_plain || '(加密解密失败)'}`);
+                    });
+                    await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
+                    return new Response('OK');
+                }
+            }
 
             // 如果命令不是发给当前机器人的，直接忽略
             if (!isForThisBot) {

@@ -8,6 +8,9 @@ keep_vars = true
 MISUB_BASE = "https://subhub.tsmoe.com"
 SUBSTORE_BASE = "https://substore.tsmoe.com"
 SUBSTORE_NAME = "relay"
+# 管理专用参数（仅在控制台或这里配置后生效）
+# ADMIN_TG_ID = "123456789"            # 你的 Telegram 数字ID
+# ADMIN_TOKEN = "your_admin_token"      # 受保护HTTP接口访问令牌
 # BOT_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
 # GROUP_ID = "-1001234567890"
 # MOONTVURL = "https://moontv.dedyn.io"
@@ -19,3 +22,7 @@ SUBSTORE_NAME = "relay"
 # [[kv_namespaces]]
 # binding = "KV"
 # id = "1fdae7a5eb774135832f55d461ac81e3"
+
+# 定时触发（需要绑定到Cloudflare计划内的Cron）
+# [[triggers.crons]]
+# schedule = "0 3 * * *"   # 每天 03:00 UTC 触发，推送Top-N日报
