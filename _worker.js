@@ -312,7 +312,7 @@ async function getTopQualitySubs(KV, n, secret) {
 async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, KV = null) {
     try {
         // 先回执
-        const pending = await sendSimpleMessage(bot_token, chatId, '<b>🔎 正在查询订阅信息...</b>');
+        const pending = await sendSimpleMessage(bot_token, chatId, '<b>🔎 正在精确分析订阅信息...</b>');
         const pendingMessageId = pending?.result?.message_id;
 
         let count = null;
@@ -1729,7 +1729,7 @@ async function answerCallback(bot_token, callbackQueryId, text = null, showAlert
 
 function buildCollapsedConvertKeyboard() {
     return {
-        inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|小火箭|qx等） ▶️', callback_data: 'ask_convert' }]]
+        inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|小火箭|QX等） ▶️', callback_data: 'ask_convert' }]]
     };
 }
 
@@ -1792,14 +1792,11 @@ function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl
         mk('sing-box', 'singbox'),
         mk('V2Ray', 'v2ray')
     ];
-    const row4 = [
-        mk('通用订阅(URI)', 'uri')
-    ];
     const row5 = [
         { text: '◀️ 收起', callback_data: 'collapse_convert' }
     ];
 
-    return { inline_keyboard: [row1, row2, row3, row4, row5] };
+    return { inline_keyboard: [row1, row2, row3, row5] };
 }
 
 function buildDeepLinksSection(substoreBase, substoreName, originalSubUrl, displayName = '订阅') {
@@ -1854,14 +1851,13 @@ function buildOpenPageSection(publicBase, substoreBase, substoreName, originalSu
             'Stash': `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
             'Egern': `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
             'sing-box': `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
-            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
-            '通用订阅(URI)': relay('uri')
+            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`
         };
 
-        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray','通用订阅(URI)'];
+        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray'];
         const lines = order.map(name => {
             const scheme = schemes[name];
-            const fallback = name === '通用订阅(URI)' ? scheme : relay('uri');
+            const fallback = '';
             const openUrl = `${pb}/open?app=${enc(name)}&scheme=${enc(scheme)}&fallback=${enc(fallback)}`;
             return `• <a href="${openUrl}">${name}</a>`;
         });
