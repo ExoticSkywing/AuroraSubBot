@@ -995,6 +995,24 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             }
 
             if (data === 'confirm_convert' || data === 'expand_convert') {
+                // 防抖：避免重复点击
+                try {
+                    if (KV) {
+                        const lockKey = `convert:lock:${chatId}:${messageId}`;
+                        const locked = await KV.get(lockKey);
+                        if (locked) {
+                            await answerCallback(bot_token, cq.id, '正在处理，请稍候…');
+                            return new Response('OK');
+                        }
+                        await KV.put(lockKey, '1', { expirationTtl: 60 });
+                    }
+                } catch {}
+                // 立即提示处理中并更新按钮文案
+                await answerCallback(bot_token, cq.id, '⏳ 正在生成，请稍候…');
+                try {
+                    const processingKb = buildProcessingKeyboard();
+                    await editMessageMarkup(bot_token, chatId, messageId, processingKb.inline_keyboard);
+                } catch {}
                 const text = cq.message?.text || '';
                 let originalSubUrl = null;
                 try {
@@ -1014,8 +1032,13 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
                     // 移除原消息的内联按钮
                     await editMessageMarkup(bot_token, chatId, messageId, []);
                 }
-                // 清理一次性临时键
-                try { if (KV) await KV.delete(`convert:${chatId}:${messageId}`); } catch {}
+                // 清理一次性临时键与锁
+                try {
+                    if (KV) {
+                        await KV.delete(`convert:${chatId}:${messageId}`);
+                        await KV.delete(`convert:lock:${chatId}:${messageId}`);
+                    }
+                } catch {}
                 await answerCallback(bot_token, cq.id, '已发送一键导入链接');
                 return new Response('OK');
             }
@@ -1024,8 +1047,19 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
                 const markup = buildCollapsedConvertKeyboard();
                 await editMessageMarkup(bot_token, chatId, messageId, markup.inline_keyboard);
                 // 清理一次性临时键
-                try { if (KV) await KV.delete(`convert:${chatId}:${messageId}`); } catch {}
+                try {
+                    if (KV) {
+                        await KV.delete(`convert:${chatId}:${messageId}`);
+                        await KV.delete(`convert:lock:${chatId}:${messageId}`);
+                    }
+                } catch {}
                 await answerCallback(bot_token, cq.id);
+                return new Response('OK');
+            }
+
+            // 占位按钮（处理中）
+            if (data === 'noop') {
+                await answerCallback(bot_token, cq.id, '正在处理，请稍候…');
                 return new Response('OK');
             }
 
@@ -1696,6 +1730,12 @@ async function answerCallback(bot_token, callbackQueryId, text = null, showAlert
 function buildCollapsedConvertKeyboard() {
     return {
         inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|小火箭|qx等） ▶️', callback_data: 'ask_convert' }]]
+    };
+}
+
+function buildProcessingKeyboard() {
+    return {
+        inline_keyboard: [[{ text: '⏳ 正在生成，请稍候…', callback_data: 'noop' }]]
     };
 }
 
