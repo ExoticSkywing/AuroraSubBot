@@ -393,8 +393,8 @@ async function getTopQualitySubs(KV, n, secret) {
             if (!val) continue;
             try {
                 const obj = JSON.parse(val);
-                // 只取 accept 或最近30天
-                if (obj && (obj.decision === 'accept' || (now - (obj.last_seen||0) <= 30*24*3600*1000))) {
+                // 仅返回 accept 项
+                if (obj && obj.decision === 'accept') {
                     const urlPlain = await decryptText(secret, obj.url_enc);
                     items.push({ ...obj, url_plain: urlPlain });
                 }
