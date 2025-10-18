@@ -1749,7 +1749,7 @@ function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl
     // 深度链接（尽量直接拉起客户端）
     const links = {
         // iOS: Loon（部分版本支持）
-        loon: `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+        loon: `loon://import?nodelist=${enc(relay('uri'))}`,
         // iOS: Shadowrocket 使用 base64(url) 的 sub:// 方案
         shadowrocket: `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
         // iOS: Quantumult X
@@ -1805,10 +1805,10 @@ function buildDeepLinksSection(substoreBase, substoreName, originalSubUrl, displ
         const urlParam = encodeURIComponent(originalSubUrl);
         const relay = (target) => `${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=${target}&noCache=true`;
         const enc = encodeURIComponent;
-        const b64url = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+        const b64url = (s) => btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
         const links = {
-            'Loon': `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+            'Loon': `loon://import?nodelist=${enc(relay('uri'))}`,
             'Shadowrocket': `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
             'Quantumult X': `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
             'Surge': `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
@@ -1816,11 +1816,10 @@ function buildDeepLinksSection(substoreBase, substoreName, originalSubUrl, displ
             'Stash': `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
             'Egern': `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
             'sing-box': `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
-            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
-            '通用订阅(URI)': relay('uri')
+            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`
         };
 
-        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray','通用订阅(URI)'];
+        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray'];
         const lines = order.map(name => {
             const href = links[name];
             // 用超链接包装名称，点击即使用深链/或 http 回落
@@ -1843,7 +1842,7 @@ function buildOpenPageSection(publicBase, substoreBase, substoreName, originalSu
 
         // 目标 app scheme（由中转页触发）
         const schemes = {
-            'Loon': `loon://import?url=${enc(relay('loon'))}&name=${enc(displayName)}`,
+            'Loon': `loon://import?nodelist=${enc(relay('uri'))}`,
             'Shadowrocket': `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
             'Quantumult X': `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
             'Surge': `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
