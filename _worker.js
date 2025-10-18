@@ -247,7 +247,7 @@ function detectHasJapanAndKorea(names, coverage = []) {
 
 function detectIspQualityKeywords(text) {
     if (!text) return false;
-    const re = /(家宽|家庭宽带|家用宽带|住宅|原生|专线|IEPL|IPLC|BGP|精品|原生IP)/i;
+    const re = /(家宽|家庭宽带|家用宽带|住宅|原生|专线|IEPL|IPLC|BGP|精品|原生IP|高速)/i;
     return re.test(text);
 }
 
@@ -261,6 +261,65 @@ function hasResetRemainderText(text) {
     if (!text) return false;
     const re = /(重置剩余|距离下次重置).{0,10}?(\d+)\s*天/i;
     return re.test(text);
+}
+
+function parseUserInfoHeader(headerVal) {
+    if (!headerVal) return null;
+    try {
+        const parts = String(headerVal).split(/;\s*/).filter(Boolean);
+        const obj = {};
+        for (const p of parts) {
+            const m = p.match(/(upload|download|total|expire)\s*=\s*(\d+)/i);
+            if (m) obj[m[1].toLowerCase()] = Number(m[2]);
+        }
+        const has = (k) => Object.prototype.hasOwnProperty.call(obj, k);
+        if (has('upload') || has('download') || has('total') || has('expire')) {
+            return {
+                upload: obj.upload || 0,
+                download: obj.download || 0,
+                total: obj.total || 0,
+                expire: typeof obj.expire === 'number' ? obj.expire : 0
+            };
+        }
+    } catch {}
+    return null;
+}
+
+async function fetchSubscriptionUserInfo(subUrl, method = 'GET', ua = 'v2rayN/6.45') {
+    try {
+        const resp = await fetch(subUrl, { method, headers: { 'User-Agent': ua, 'Cache-Control': 'no-cache' } });
+        const h = resp.headers.get('subscription-userinfo') || resp.headers.get('Subscription-Userinfo');
+        return { info: parseUserInfoHeader(h), header: h || null, method, ua };
+    } catch {
+        return { info: null, header: null, method, ua };
+    }
+}
+
+async function fetchUserInfoFromCandidates(subUrl, substoreBase, substoreName) {
+    // 依次尝试：原始 URL -> Sub-Store 中转 target=uri；每个 URL 上 HEAD/GET × 多 UA
+    const candidates = [subUrl];
+    try {
+        if (substoreBase && substoreName) {
+            const base = substoreBase.replace(/\/$/, '');
+            const urlParam = encodeURIComponent(subUrl);
+            candidates.push(`${base}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=uri&ua=v2rayN/6.45&noCache=true`);
+        }
+    } catch {}
+    const methods = ['HEAD', 'GET'];
+    const uas = ['v2rayN/6.45', 'Clash', 'Surge', 'Shadowrocket'];
+    let last = null;
+    for (const cand of candidates) {
+        for (const m of methods) {
+            for (const ua of uas) {
+                const res = await fetchSubscriptionUserInfo(cand, m, ua);
+                last = { ...res, from: cand };
+                if (res.info && (res.info.total || res.info.upload || res.info.download || typeof res.info.expire === 'number')) {
+                    return { ...res, from: cand };
+                }
+            }
+        }
+    }
+    return last;
 }
 
 // 质量评估
@@ -319,7 +378,8 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         let userInfo = null;
         let debug = null;
 
-        if (misubBase) {
+        const useMiSub = false;
+        if (useMiSub && misubBase) {
             const base = misubBase.replace(/\/$/, '');
             // 若 MiSub 需要鉴权，先登录换取 Cookie
             let headers = { 'Content-Type': 'application/json' };
@@ -355,8 +415,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
             }
         }
 
-        // 若 MiSub 不可用或需要鉴权，走直连兜底解析
-        // 从 Sub-Store 拉节点（强制 target=base64，UA v2rayN），并统计节点信息（优先以 Sub-Store 为准）
+        // 从 Sub-Store 拉节点（优先以 Sub-Store 为准）
         let nodeSampleNames = [];
         let protocols = [];
         let sampledCountries = [];
@@ -425,6 +484,15 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                 // 忽略 Sub-Store 错误，继续输出已获取的信息
             }
         }
+        // 兜底：从候选地址读取 subscription-userinfo 响应头
+        let uiDebug = null;
+        try {
+            if (!userInfo || !userInfo.total) {
+                const res = await fetchUserInfoFromCandidates(subUrl, substoreBase, substoreName);
+                uiDebug = res || null;
+                if (res && res.info) userInfo = res.info;
+            }
+        } catch {}
         // 如果仍无任何信息，则提示失败
         if ((count === null && !userInfo)) {
             await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：后端未返回有效数据，请稍后重试。');
@@ -488,6 +556,16 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
             lines.push('<b>示例节点</b>: 暂无可用名称');
         }
 
+        // 调试：若仍无详细用量信息，附带一次尝试的 header 摘要，便于定位（可后续移除）
+        if (uiDebug && (!userInfo || (!userInfo.upload && !userInfo.download && !userInfo.expire))) {
+            const dbg = [];
+            if (uiDebug.header) dbg.push(`header=${uiDebug.header}`);
+            if (uiDebug.method) dbg.push(`method=${uiDebug.method}`);
+            if (uiDebug.ua) dbg.push(`ua=${uiDebug.ua}`);
+            if (uiDebug.from) dbg.push(`from=${uiDebug.from}`);
+            if (dbg.length) lines.push(`<i>debug</i>: ${dbg.join(' | ')}`);
+        }
+
         const finalText = lines.join('\n');
 
         // ===== 质量评分与KV存储（黑名单命中则跳过入库） =====
@@ -543,7 +621,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             isp_quality: ispQuality,
                             spam
                         },
-                        decision: score >= 0.6 ? 'accept' : 'reject'
+                        decision: score >= 0.5 ? 'accept' : 'reject'
                     };
                     const key = `sub:${urlHash}`;
                     const ttl = summary.decision === 'accept' ? 30 * 24 * 3600 : 24 * 3600;
@@ -1729,7 +1807,7 @@ async function answerCallback(bot_token, callbackQueryId, text = null, showAlert
 
 function buildCollapsedConvertKeyboard() {
     return {
-        inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|小火箭|QX等） ▶️', callback_data: 'ask_convert' }]]
+        inline_keyboard: [[{ text: '是否转换订阅（例如：Loon|QX|小火箭等） ▶️', callback_data: 'ask_convert' }]]
     };
 }
 
