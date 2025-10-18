@@ -1025,18 +1025,33 @@ async function handleWebhookInit(bot_token, workerUrl, token) {
 
         const setWebhookResult = await setWebhookResponse.json();
 
-        // 设置机器人命令
-        const setCommandsResponse = await fetch(`https://api.telegram.org/bot${bot_token}/setMyCommands`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                commands: [
-                    { command: "start", description: "订阅查询（发送链接）" },
-                    { command: "help", description: "使用说明" }
-                ]
-            }),
-        });
-        const setCommandsResult = await setCommandsResponse.json();
+        // 设置机器人命令（覆盖多个作用域，确保左下角菜单可见）
+        const commandsPayload = {
+            commands: [
+                { command: "start", description: "订阅查询（发送链接）" },
+                { command: "help", description: "使用说明" }
+            ]
+        };
+
+        // 默认作用域
+        const setDefault = await fetch(`https://api.telegram.org/bot${bot_token}/setMyCommands`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...commandsPayload, scope: { type: 'default' } })
+        }).then(r=>r.json()).catch(()=>null);
+
+        // 所有私聊
+        const setPriv = await fetch(`https://api.telegram.org/bot${bot_token}/setMyCommands`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...commandsPayload, scope: { type: 'all_private_chats' } })
+        }).then(r=>r.json()).catch(()=>null);
+
+        // 所有群聊
+        const setGroup = await fetch(`https://api.telegram.org/bot${bot_token}/setMyCommands`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...commandsPayload, scope: { type: 'all_group_chats' } })
+        }).then(r=>r.json()).catch(()=>null);
+
+        const setCommandsResult = { default: setDefault, private: setPriv, group: setGroup };
 
         return new Response(JSON.stringify({
             webhook: setWebhookResult,
