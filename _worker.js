@@ -1025,8 +1025,8 @@ async function handleWebhookInit(bot_token, workerUrl, token) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 commands: [
-                    { command: "state", description: "查看站点状态信息" },
-                    { command: "start", description: "注册/查看用户信息" }
+                    { command: "start", description: "订阅查询（发送链接）" },
+                    { command: "help", description: "使用说明" }
                 ]
             }),
         });
@@ -1261,24 +1261,42 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
 
             // 处理 /start 命令
             if (normalizedText === '/start' || normalizedText.startsWith('/start ')) {
-                return await handleStartCommand(bot_token, userId, chatId, message.chat.type, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName);
+                const lines = [];
+                lines.push('欢迎使用订阅查询机器人');
+                lines.push('');
+                lines.push('发送包含 http 或 https 的订阅链接，我将返回：');
+                lines.push('• 流量用量与剩余');
+                lines.push('• 到期时间与剩余天数');
+                lines.push('• 节点数量、协议类型、覆盖地区');
+                lines.push('• 一键导入客户端按钮');
+                lines.push('');
+                lines.push('若未读取到用量，可尝试原始地址或经由中转链接。');
+                await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
+                return new Response('OK');
             }
 
-            // 处理 /pwd 命令
+            // 处理 /help 命令
+            if (normalizedText === '/help') {
+                const lines = [];
+                lines.push('使用说明');
+                lines.push('');
+                lines.push('1. 直接发送你的订阅链接（http/https）。');
+                lines.push('2. 我会分析用量、到期、节点数、协议与覆盖地区，并提供一键导入按钮。');
+                lines.push('3. 未显示用量时，订阅可能未返回 subscription-userinfo，可尝试其它链接。');
+                await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
+                return new Response('OK');
+            }
+
+            // 处理 /pwd 命令（停用）
             if (normalizedText.startsWith('/pwd')) {
-                if (normalizedText === '/pwd' || normalizedText.trim() === '/pwd') {
-                    // 用户只输入了 /pwd 没有提供密码
-                    await sendMessage(bot_token, chatId, "❌ 请输入要修改的新密码\n\n💡 使用方法：<code>/pwd 新密码</code>\n📝 示例：<code>/pwd 12345678</code>\n\n这样就会将密码改为 12345678", moontvUrl, siteName);
-                    return new Response('OK');
-                } else if (normalizedText.startsWith('/pwd ')) {
-                    const newPassword = normalizedText.substring(5).trim();
-                    return await handlePasswordCommand(bot_token, userId, chatId, message.chat.type, GROUP_ID, newPassword, apiUrl, moontvUrl, username, password, KV, siteName);
-                }
+                await sendSimpleMessage(bot_token, chatId, '此功能已关闭，请直接发送订阅链接进行查询');
+                return new Response('OK');
             }
 
-            // 处理 /state 命令
+            // 处理 /state 命令（停用）
             if (normalizedText === '/state') {
-                return await handleStateCommand(bot_token, userId, chatId, GROUP_ID, apiUrl, moontvUrl, username, password, KV, siteName);
+                await sendSimpleMessage(bot_token, chatId, '此功能已关闭，请直接发送订阅链接进行查询');
+                return new Response('OK');
             }
 
             // 订阅查询：无需权限，检测文本中是否包含 http/https 链接
