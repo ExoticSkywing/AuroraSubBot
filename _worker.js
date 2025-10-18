@@ -636,7 +636,12 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                     const spam = detectSpamKeywords((allNodeNames || []).join(' '));
                     // JP+KR：节点名 + 覆盖范围
                     const jpkrBoth = detectHasJapanAndKorea(allNodeNames || [], countries || []);
-                    const score = evaluateQualityScore({ resetHint, ispQuality, spam, jpkrBoth });
+                    // 协议判定：HTTP 节点超过 5 个则大幅降分
+                    const httpCount = Array.isArray(protocolList) ? protocolList.filter(t => String(t).toUpperCase() === 'HTTP').length : 0;
+                    let score = evaluateQualityScore({ resetHint, ispQuality, spam, jpkrBoth });
+                    let httpExcessive = false;
+                    if (httpCount > 5) { httpExcessive = true; score -= 0.5; }
+                    if (score < 0) score = 0;
 
                     const urlHash = await fingerprint(adminSecret, subUrl);
                     const encUrl = await encryptText(adminSecret, subUrl);
@@ -658,7 +663,8 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             reset_hint: resetHint,
                             jpkr_both: jpkrBoth,
                             isp_quality: ispQuality,
-                            spam
+                            spam,
+                            http_excessive: httpExcessive
                         },
                         decision: score >= 0.5 ? 'accept' : 'reject'
                     };
@@ -1224,7 +1230,8 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
                             rs.reset_hint ? '重置✓' : null,
                             rs.jpkr_both ? '日+韩✓' : null,
                             rs.isp_quality ? '家宽/专线✓' : null,
-                            rs.spam ? '引流×' : null
+                            rs.spam ? '引流×' : null,
+                            rs.http_excessive ? 'HTTP多×' : null
                         ].filter(Boolean).join('，');
                         lines.push(`${idx + 1}. ${s.provider_domain} 评分:${(s.quality_score||0).toFixed(2)} 节点:${s.node_count}${reasonText? ' ｜'+reasonText: ''}`);
                         lines.push(`URL: ${s.url_plain || '(加密解密失败)'}`);
