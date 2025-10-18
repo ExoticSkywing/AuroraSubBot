@@ -158,6 +158,45 @@ function parseProtocolsFrom(content, nodes) {
     return Array.from(protoSet).map(normalizeProtocolName);
 }
 
+// ===== 使用统计：每日唯一用户与使用次数 =====
+function getDateKey(offsetDays = 0, tzOffsetMinutes = 480) {
+    const now = Date.now() + tzOffsetMinutes * 60 * 1000 + offsetDays * 24 * 3600 * 1000;
+    const d = new Date(now);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+}
+
+async function recordDailyUsage(KV, userId, displayName) {
+    try {
+        if (!KV || !userId) return;
+        const key = `usage:${getDateKey(0)}`;
+        const raw = await KV.get(key);
+        const obj = raw ? JSON.parse(raw) : { counts: {}, names: {}, first_ts: Date.now() };
+        const uid = String(userId);
+        obj.counts[uid] = (obj.counts[uid] || 0) + 1;
+        if (displayName) obj.names[uid] = String(displayName).slice(0, 64);
+        obj.last_ts = Date.now();
+        await KV.put(key, JSON.stringify(obj), { expirationTtl: 60 * 24 * 3600 });
+    } catch {}
+}
+
+async function getDailyUsage(KV, offsetDays = 0) {
+    try {
+        const key = `usage:${getDateKey(offsetDays)}`;
+        const raw = await KV.get(key);
+        if (!raw) return { date: key.slice(6), counts: {}, names: {}, unique: 0, total: 0 };
+        const obj = JSON.parse(raw);
+        const counts = obj.counts || {};
+        const total = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+        const unique = Object.keys(counts).length;
+        return { date: key.slice(6), counts, names: obj.names || {}, unique, total };
+    } catch {
+        return { date: getDateKey(offsetDays), counts: {}, names: {}, unique: 0, total: 0 };
+    }
+}
+
 function normalizeProtocolName(protoRaw) {
     if (!protoRaw) return '';
     const p = String(protoRaw).toUpperCase();
@@ -1193,6 +1232,26 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
                     await sendSimpleMessage(bot_token, chatId, lines.join('\n'));
                     return new Response('OK');
                 }
+                if (normalizedText.startsWith('/usage')) {
+                    const parts = normalizedText.split(' ').filter(Boolean);
+                    let offset = 0;
+                    if (parts.length >= 2) {
+                        const a = parts[1].toLowerCase();
+                        if (a === 'y' || a === 'yday' || a === 'yesterday') offset = -1;
+                        else { const n = parseInt(a, 10); if (!isNaN(n)) offset = n; }
+                    }
+                    const stats = await getDailyUsage(KV, offset);
+                    const entries = Object.entries(stats.counts).sort((a,b)=> (b[1]||0)-(a[1]||0)).slice(0,5);
+                    const topLines = entries.map(([uid,c],i)=>{
+                        const name = stats.names[uid] || uid;
+                        const link = `<a href="tg://user?id=${uid}">${name}</a>`;
+                        return `${i+1}. ${link}（${uid}）×${c}`;
+                    });
+                    const head = `📈 使用统计 ${getDateKey(offset)}\n唯一用户: ${stats.unique}｜总查询: ${stats.total}`;
+                    const body = topLines.length? ['Top 5:', ...topLines].join('\n') : 'Top 5: 暂无';
+                    await sendSimpleMessage(bot_token, chatId, `${head}\n${body}`);
+                    return new Response('OK');
+                }
             }
 
             // 如果命令不是发给当前机器人的，直接忽略
@@ -1226,6 +1285,11 @@ async function handleTelegramWebhook(request, bot_token, GROUP_ID, apiUrl, moont
             const urlMatch = normalizedText.match(/https?:\/\/[^\s]+/i);
             if (urlMatch) {
                 const subUrl = urlMatch[0];
+                // 记录今日使用：以 message.from.id 作为用户唯一键
+                try {
+                    const name = message.from.username ? `@${message.from.username}` : `${message.from.first_name||''} ${message.from.last_name||''}`.trim();
+                    await recordDailyUsage(KV, userId, name);
+                } catch {}
                 return await handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUrl, siteName, misubBase, misubAdminPassword, substoreBase, substoreName, KV);
             }
         }
