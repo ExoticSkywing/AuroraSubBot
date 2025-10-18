@@ -1753,20 +1753,20 @@ function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl
         // iOS: Shadowrocket 使用 base64(url) 的 sub:// 方案
         shadowrocket: `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
         // iOS: Quantumult X
-        quanx: `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
+        quanx: `quantumult-x:///update-configuration?remote-resource=${enc(JSON.stringify({ server_remote: [`${relay('uri')}, tag=${displayName}`] }))}`,
         // iOS/macOS: Surge
         surge: `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
         'surge-mac': `surge-mac:///install-config?url=${enc(relay('surge-mac'))}&name=${enc(displayName)}`,
         // iOS: Stash（Clash 格式）
         stash: `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
         // iOS: Egern（Clash 格式）
-        egern: `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
+        egern: `egern:///policy_groups/new?name=${enc(displayName)}&url=${enc(relay('egern'))}`,
         // iOS/Android: sing-box
         singbox: `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
         // Android: V2RayNG（不同版本可能差异，提供常见 scheme）
         v2ray: `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
-        // 通用 URI（浏览器可见，用于兜底/分享）
-        uri: relay('uri')
+        // Clash（通用客户端）
+        clash: `clash://install-config?url=${enc(relay('clash'))}`
     };
 
     const mk = (label, key) => {
@@ -1792,11 +1792,14 @@ function buildExpandedConvertKeyboard(substoreBase, substoreName, originalSubUrl
         mk('sing-box', 'singbox'),
         mk('V2Ray', 'v2ray')
     ];
+    const row4 = [
+        mk('Clash', 'clash')
+    ];
     const row5 = [
         { text: '◀️ 收起', callback_data: 'collapse_convert' }
     ];
 
-    return { inline_keyboard: [row1, row2, row3, row5] };
+    return { inline_keyboard: [row1, row2, row3, row4, row5] };
 }
 
 function buildDeepLinksSection(substoreBase, substoreName, originalSubUrl, displayName = '订阅') {
@@ -1844,16 +1847,17 @@ function buildOpenPageSection(publicBase, substoreBase, substoreName, originalSu
         const schemes = {
             'Loon': `loon://import?nodelist=${enc(relay('uri'))}`,
             'Shadowrocket': `shadowrocket://add/sub://${b64url(relay('uri'))}?remark=${enc(displayName)}`,
-            'Quantumult X': `quantumult-x:///add-resource?remote=${enc(relay('quanx'))}&tag=${enc(displayName)}`,
+            'Quantumult X': `quantumult-x:///update-configuration?remote-resource=${enc(JSON.stringify({ server_remote: [`${relay('uri')}, tag=${displayName}`] }))}`,
             'Surge': `surge:///install-config?url=${enc(relay('surge'))}&name=${enc(displayName)}`,
             'Surge(macOS)': `surge-mac:///install-config?url=${enc(relay('surge-mac'))}&name=${enc(displayName)}`,
             'Stash': `stash://install-config?url=${enc(relay('stash'))}&name=${enc(displayName)}`,
-            'Egern': `egern://install-config?url=${enc(relay('egern'))}&name=${enc(displayName)}`,
+            'Egern': `egern:///policy_groups/new?name=${enc(displayName)}&url=${enc(relay('egern'))}`,
             'sing-box': `sing-box://import-remote-profile?url=${enc(relay('singbox'))}#${enc(displayName)}`,
-            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`
+            'V2Ray': `v2rayng://import-subscription?url=${enc(relay('v2ray'))}`,
+            'Clash': `clash://install-config?url=${enc(relay('clash'))}`
         };
 
-        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray'];
+        const order = ['Loon','Shadowrocket','Quantumult X','Surge','Surge(macOS)','Stash','Egern','sing-box','V2Ray','Clash'];
         const lines = order.map(name => {
             const scheme = schemes[name];
             const fallback = '';
