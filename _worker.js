@@ -249,75 +249,6 @@ function base64ToAb(base64) {
     return bytes.buffer;
 }
 
-function tryParseClashYaml(content) {
-    try {
-        if (!content || !/\bproxies\s*:/i.test(content)) return null;
-        const lines = content.replace(/\r\n/g,'\n').split('\n');
-        const proxies = [];
-        let inProxies = false;
-        let current = null;
-        for (const raw of lines) {
-            const line = raw.replace(/\t/g, '    ');
-            if (!inProxies) {
-                if (/^\s*proxies\s*:/i.test(line)) { inProxies = true; continue; }
-            } else {
-                if (/^\s*\S.*:\s*$/.test(line) && !/^\s*-\s/.test(line)) { if (current) proxies.push(current); break; }
-                const mItem = line.match(/^\s*-\s*(.*)$/);
-                if (mItem) {
-                    if (current) proxies.push(current);
-                    current = {};
-                    const inline = (mItem[1] || '').trim();
-                    if (inline) {
-                        // 支持 inline 映射：- { name: xxx, type: vless, ... } 或 - name: xxx, type: vless
-                        const nameM = inline.match(/name\s*:\s*['"]?([^,'"}]+)['"]?/i);
-                        const typeM = inline.match(/type\s*:\s*['"]?([^,'"}\s]+)['"]?/i);
-                        if (nameM) current.name = nameM[1];
-                        if (typeM) current.type = typeM[1];
-                    }
-                    continue;
-                }
-                const mKV = line.match(/^\s+([A-Za-z0-9_-]+)\s*:\s*(.+)\s*$/);
-                if (mKV && current) {
-                    let val = mKV[2].trim();
-                    val = val.replace(/^['"]|['"]$/g, '');
-                    current[mKV[1]] = val;
-                }
-            }
-        }
-        if (current) proxies.push(current);
-        const normalized = proxies.filter(p => p && (p.name || p["name"]) && (p.type || p["type"]))
-            .map(p => ({ name: String(p.name || p["name"]), type: String(p.type || p["type"]).toUpperCase() }));
-        return normalized.length ? normalized : null;
-    } catch { return null; }
-}
-
-function tryExtractProviderUrls(content) {
-    try {
-        if (!content || !/\bproxy-providers\s*:/i.test(content)) return [];
-        const lines = content.replace(/\r\n/g,'\n').split('\n');
-        const urls = new Set();
-        let inProviders = false;
-        let baseIndent = 0;
-        for (const raw of lines) {
-            const line = raw.replace(/\t/g, '    ');
-            if (!inProviders) {
-                const m = line.match(/^(\s*)proxy-providers\s*:/i);
-                if (m) { inProviders = true; baseIndent = m[1].length; continue; }
-            } else {
-                // 退出 providers 区域
-                if (/^\s*\S/.test(line) && line.match(/^\s*/)[0].length <= baseIndent && !/^\s*#/.test(line)) break;
-                // 常规 url: 行
-                const mUrl = line.match(/\burl\s*:\s*['"]?([^'"\s]+)['"]?/i);
-                if (mUrl && mUrl[1]) urls.add(mUrl[1]);
-                // inline map: { url: ... }
-                const mInline = line.match(/\{[^}]*\burl\s*:\s*['"]?([^'"}\s]+)['"]?[^}]*\}/i);
-                if (mInline && mInline[1]) urls.add(mInline[1]);
-            }
-        }
-        return Array.from(urls);
-    } catch { return []; }
-}
-
 async function encryptText(secret, plaintext) {
     const key = await deriveAesKey(secret);
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -485,7 +416,6 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         let count = null;
         let userInfo = null;
         let debug = null;
-        const parseDbg = { subJson:false, subBase64:false, subUri:false, base64NodeLines:0, yamlProxies:false, providers:false, providerUrls:0, providerTried:false, providerViaSubstore:false, providerNodes:0, directTried:false, directYaml:false, directProviders:false, directNodes:0 };
 
         const useMiSub = false;
         if (useMiSub && misubBase) {
@@ -555,7 +485,6 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             sampledCountries = Array.from(new Set(countriesFull));
                             count = list.length;
                             parsedFromJson = true;
-                            parseDbg.subJson = true;
                         }
                     }
                 } catch {}
@@ -569,287 +498,30 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                         try { content = atob(b64.replace(/\s/g, '')); } catch { content = b64; }
                         const lines = content.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                         const nodeLines = lines.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                        parseDbg.subBase64 = true; parseDbg.base64NodeLines = nodeLines.length;
-                        if (nodeLines.length > 0) {
-                            const types = nodeLines.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
-                            protocolList = types;
-                            protocols = Array.from(new Set(types));
-                            count = nodeLines.length;
-                            let namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                            if (namesAll.length === 0) {
-                                const reName = /#([^#\n\r]*)$/;
-                                const fallback = nodeLines.map(l => { const m = l.match(reName); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
-                                namesAll.push(...fallback);
-                            }
-                            allNodeNames = namesAll;
-                            nodeSampleNames = sampleArray(namesAll, 3);
-                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                            countryListAll = countriesFull;
-                            sampledCountries = Array.from(new Set(countriesFull));
-                        } else if (/\bproxies\s*:/i.test(content)) {
-                            const parsed = tryParseClashYaml(content);
-                            if (parsed && parsed.length) {
-                                const namesAll = parsed.map(p => p.name).filter(Boolean);
-                                protocolList = parsed.map(p => p.type);
-                                protocols = Array.from(new Set(protocolList));
-                                count = parsed.length;
-                                allNodeNames = namesAll;
-                                nodeSampleNames = sampleArray(namesAll, 3);
-                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                                countryListAll = countriesFull;
-                                sampledCountries = Array.from(new Set(countriesFull));
-                                parseDbg.yamlProxies = true;
-                            }
-                        } else if (/\bproxy-providers\s*:/i.test(content)) {
-                            const urls = tryExtractProviderUrls(content);
-                            parseDbg.providers = true; parseDbg.providerUrls = urls.length;
-                            if (urls && urls.length) {
-                                try {
-                                    let resolvedText = null;
-                                    if (substoreBase && substoreName) {
-                                        const pParam = encodeURIComponent(urls[0]);
-                                        const pJson = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=JSON&noCache=true`;
-                                        const pj = await fetch(pJson, { method: 'GET' });
-                                        if (pj && pj.ok) {
-                                            const jtext = await pj.text();
-                                            try {
-                                                const list = JSON.parse(jtext);
-                                                if (Array.isArray(list) && list.length > 0) {
-                                                    const namesAll = list.map(i => i?.name).filter(Boolean);
-                                                    const typesAll = list.map(i => i?.type).filter(Boolean).map(t => String(t).toUpperCase());
-                                                    protocolList = typesAll;
-                                                    protocols = Array.from(new Set(typesAll));
-                                                    count = list.length;
-                                                    allNodeNames = namesAll;
-                                                    nodeSampleNames = sampleArray(namesAll, 3);
-                                                    const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                                                    countryListAll = countriesFull;
-                                                    sampledCountries = Array.from(new Set(countriesFull));
-                                                    parseDbg.providerViaSubstore = true; parseDbg.providerNodes = list.length; parseDbg.providerTried = true;
-                                                    resolvedText = null;
-                                                }
-                                            } catch {}
-                                        }
-                                        if (count === null) {
-                                            const pB64Url = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=base64&ua=Clash&noCache=true`;
-                                            const pb = await fetch(pB64Url, { method: 'GET' });
-                                            if (pb && pb.ok) {
-                                                const b64t = await pb.text();
-                                                try { resolvedText = atob(b64t.replace(/\s/g, '')); } catch { resolvedText = b64t; }
-                                            }
-                                        }
-                                    }
-                                    if (count === null) {
-                                        const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
-                                        if (pResp && pResp.ok) {
-                                            resolvedText = await pResp.text();
-                                            parseDbg.providerTried = true;
-                                        }
-                                    }
-                                    if (resolvedText !== null) {
-                                        if (/\bproxies\s*:/i.test(resolvedText)) {
-                                            const parsed = tryParseClashYaml(resolvedText);
-                                            if (parsed && parsed.length) {
-                                                const namesAll = parsed.map(p => p.name).filter(Boolean);
-                                                protocolList = parsed.map(p => p.type);
-                                                protocols = Array.from(new Set(protocolList));
-                                                count = parsed.length;
-                                                allNodeNames = namesAll;
-                                                nodeSampleNames = sampleArray(namesAll, 3);
-                                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                                                countryListAll = countriesFull;
-                                                sampledCountries = Array.from(new Set(countriesFull));
-                                                parseDbg.providerNodes = parsed.length;
-                                            }
-                                        } else {
-                                            const lines2 = resolvedText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
-                                            const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                                            if (nodeLines2.length > 0) {
-                                                const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
-                                                protocolList = types2;
-                                                protocols = Array.from(new Set(types2));
-                                                count = nodeLines2.length;
-                                                let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                                                if (namesAll2.length === 0) {
-                                                    const reName2 = /#([^#\n\r]*)$/;
-                                                    const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
-                                                    namesAll2.push(...fallback2);
-                                                }
-                                                allNodeNames = namesAll2;
-                                                nodeSampleNames = sampleArray(namesAll2, 3);
-                                                const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
-                                                countryListAll = countriesFull2;
-                                                sampledCountries = Array.from(new Set(countriesFull2));
-                                                parseDbg.providerNodes = nodeLines2.length;
-                                            }
-                                        }
-                                    }
-                                } catch {}
-                            }
+                        const types = nodeLines.map(l => {
+                            const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null;
+                        }).filter(Boolean);
+                        protocolList = types;
+                        protocols = Array.from(new Set(types));
+                        count = nodeLines.length;
+                        let namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                        if (namesAll.length === 0) {
+                            const reName = /#([^#\n\r]*)$/;
+                            const fallback = nodeLines.map(l => {
+                                const m = l.match(reName); return m ? decodeURIComponent(m[1]) : null;
+                            }).filter(Boolean);
+                            namesAll.push(...fallback);
                         }
-                    }
-                    // 3) 若仍未得到节点，尝试 target=uri（期望返回纯 URI 列表）
-                    if (count === null) {
-                        try {
-                            const uriUrl = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=uri&ua=Clash&noCache=true`;
-                            const ur = await fetch(uriUrl, { method: 'GET' });
-                            if (ur && ur.ok) {
-                                const text2 = await ur.text();
-                                const linesU = text2.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
-                                const nodeLinesU = linesU.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                                if (nodeLinesU.length > 0) {
-                                    const typesU = nodeLinesU.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
-                                    protocolList = typesU;
-                                    protocols = Array.from(new Set(typesU));
-                                    count = nodeLinesU.length;
-                                    let namesAllU = nodeLinesU.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                                    if (namesAllU.length === 0) {
-                                        const reNameU = /#([^#\n\r]*)$/;
-                                        const fallbackU = nodeLinesU.map(l => { const m = l.match(reNameU); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
-                                        namesAllU.push(...fallbackU);
-                                    }
-                                    allNodeNames = namesAllU;
-                                    nodeSampleNames = sampleArray(namesAllU, 3);
-                                    const countriesFullU = namesAllU.map(extractCountry).filter(Boolean);
-                                    countryListAll = countriesFullU;
-                                    sampledCountries = Array.from(new Set(countriesFullU));
-                                    parseDbg.subUri = true;
-                                }
-                            }
-                        } catch {}
+                        allNodeNames = namesAll;
+                        nodeSampleNames = sampleArray(namesAll, 3);
+                        const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                        countryListAll = countriesFull;
+                        sampledCountries = Array.from(new Set(countriesFull));
                     }
                 }
             } catch (e) {
                 // 忽略 Sub-Store 错误，继续输出已获取的信息
             }
-        }
-        // 3) 直接抓取原始链接兜底（Clash YAML 或 URI 列表），并解析 proxy-providers
-        if (count === null) {
-            try {
-                const r = await fetch(subUrl, { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache', 'Accept': 'text/plain, text/yaml, */*' } });
-                parseDbg.directTried = true;
-                if (r && r.ok) {
-                    const text = await r.text();
-                    if (/\bproxies\s*:/i.test(text)) {
-                        const parsed = tryParseClashYaml(text);
-                        if (parsed && parsed.length) {
-                            const namesAll = parsed.map(p => p.name).filter(Boolean);
-                            protocolList = parsed.map(p => p.type);
-                            protocols = Array.from(new Set(protocolList));
-                            count = parsed.length;
-                            allNodeNames = namesAll;
-                            nodeSampleNames = sampleArray(namesAll, 3);
-                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                            countryListAll = countriesFull;
-                            sampledCountries = Array.from(new Set(countriesFull));
-                            parseDbg.directYaml = true; parseDbg.directNodes = parsed.length;
-                        }
-                    } else if (/\bproxy-providers\s*:/i.test(text)) {
-                        const urls = tryExtractProviderUrls(text);
-                        if (urls && urls.length) {
-                            try {
-                                let resolvedText = null;
-                                if (substoreBase && substoreName) {
-                                    const pParam = encodeURIComponent(urls[0]);
-                                    const pJson = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=JSON&noCache=true`;
-                                    const pj = await fetch(pJson, { method: 'GET' });
-                                    if (pj && pj.ok) {
-                                        const jtext = await pj.text();
-                                        try {
-                                            const list = JSON.parse(jtext);
-                                            if (Array.isArray(list) && list.length > 0) {
-                                                const namesAll = list.map(i => i?.name).filter(Boolean);
-                                                const typesAll = list.map(i => i?.type).filter(Boolean).map(t => String(t).toUpperCase());
-                                                protocolList = typesAll;
-                                                protocols = Array.from(new Set(typesAll));
-                                                count = list.length;
-                                                allNodeNames = namesAll;
-                                                nodeSampleNames = sampleArray(namesAll, 3);
-                                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                                                countryListAll = countriesFull;
-                                                sampledCountries = Array.from(new Set(countriesFull));
-                                                resolvedText = null;
-                                            }
-                                        } catch {}
-                                    }
-                                    if (count === null) {
-                                        const pB64Url = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=base64&ua=Clash&noCache=true`;
-                                        const pb = await fetch(pB64Url, { method: 'GET' });
-                                        if (pb && pb.ok) {
-                                            const b64t = await pb.text();
-                                            try { resolvedText = atob(b64t.replace(/\s/g, '')); } catch { resolvedText = b64t; }
-                                        }
-                                    }
-                                }
-                                if (count === null) {
-                                    const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
-                                    if (pResp && pResp.ok) {
-                                        resolvedText = await pResp.text();
-                                    }
-                                }
-                                if (resolvedText !== null) {
-                                    if (/\bproxies\s*:/i.test(resolvedText)) {
-                                        const parsed = tryParseClashYaml(resolvedText);
-                                        if (parsed && parsed.length) {
-                                            const namesAll = parsed.map(p => p.name).filter(Boolean);
-                                            protocolList = parsed.map(p => p.type);
-                                            protocols = Array.from(new Set(protocolList));
-                                            count = parsed.length;
-                                            allNodeNames = namesAll;
-                                            nodeSampleNames = sampleArray(namesAll, 3);
-                                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                                            countryListAll = countriesFull;
-                                            sampledCountries = Array.from(new Set(countriesFull));
-                                            parseDbg.directProviders = true; parseDbg.directNodes = parsed.length;
-                                        }
-                                    } else {
-                                        const lines2 = resolvedText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
-                                        const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                                        if (nodeLines2.length > 0) {
-                                            const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
-                                            protocolList = types2;
-                                            protocols = Array.from(new Set(types2));
-                                            count = nodeLines2.length;
-                                            let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                                            if (namesAll2.length === 0) {
-                                                const reName2 = /#([^#\n\r]*)$/;
-                                                const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
-                                                namesAll2.push(...fallback2);
-                                            }
-                                            allNodeNames = namesAll2;
-                                            nodeSampleNames = sampleArray(namesAll2, 3);
-                                            const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
-                                            countryListAll = countriesFull2;
-                                            sampledCountries = Array.from(new Set(countriesFull2));
-                                            parseDbg.directProviders = true; parseDbg.directNodes = nodeLines2.length;
-                                        }
-                                    }
-                                }
-                            } catch {}
-                        }
-                    } else {
-                        const lines2 = text.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
-                        const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                        if (nodeLines2.length > 0) {
-                            const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
-                            protocolList = types2;
-                            protocols = Array.from(new Set(types2));
-                            count = nodeLines2.length;
-                            let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                            if (namesAll2.length === 0) {
-                                const reName2 = /#([^#\n\r]*)$/;
-                                const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
-                                namesAll2.push(...fallback2);
-                            }
-                            allNodeNames = namesAll2;
-                            nodeSampleNames = sampleArray(namesAll2, 3);
-                            const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
-                            countryListAll = countriesFull2;
-                            sampledCountries = Array.from(new Set(countriesFull2));
-                        }
-                    }
-                }
-            } catch {}
         }
         // 兜底：从候选地址读取 subscription-userinfo 响应头
         let uiDebug = null;
@@ -860,19 +532,9 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                 if (res && res.info) userInfo = res.info;
             }
         } catch {}
-        // 如果仍无任何信息，则提示失败（并输出解析调试）
+        // 如果仍无任何信息，则提示失败
         if ((count === null && !userInfo)) {
-            const dbgPairs = [
-                `subJson=${parseDbg.subJson}`,
-                `subBase64=${parseDbg.subBase64}(${parseDbg.base64NodeLines})`,
-                `subUri=${parseDbg.subUri}`,
-                `yamlProxies=${parseDbg.yamlProxies}`,
-                `providers=${parseDbg.providers}(${parseDbg.providerUrls})`,
-                `provTried=${parseDbg.providerTried} viaSub=${parseDbg.providerViaSubstore} nodes=${parseDbg.providerNodes}`,
-                `directTried=${parseDbg.directTried} directYaml=${parseDbg.directYaml} directProv=${parseDbg.directProviders} nodes=${parseDbg.directNodes}`
-            ];
-            await sendSimpleMessage(bot_token, chatId, `❌ 查询失败：后端未返回有效数据，请稍后重试。
-<i>debug</i>: ${dbgPairs.join(' | ')}`);
+            await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：后端未返回有效数据，请稍后重试。');
             return new Response('OK');
         }
 
@@ -1081,7 +743,7 @@ export default {
         const username = env.USERNAME || "admin";
         const password = env.PASSWORD || "admin_password";
         const token = env.TOKEN || "token";
-        const bot_token = env.BOT_TOKEN; // 必须从环境变量提供，禁止在代码中包含任何类似令牌的占位符
+        const bot_token = env.BOT_TOKEN || "8226743743:AAHfrc09vW8cxKHyU0q0YKPuCXrW1ICWdU0";
         const GROUP_ID = env.GROUP_ID || "-1002563172210";
         const misubBase = env.MISUB_BASE || null; // MiSub 后端地址
         const misubAdminPassword = env.MISUB_ADMIN_PASSWORD || null; // MiSub 管理密码，用于获取 Cookie
@@ -1093,10 +755,6 @@ export default {
         const url = new URL(request.url);
         const PUBLIC_BASE = env.PUBLIC_BASE || `${url.protocol}//${url.host}`;
         const path = url.pathname;
-
-        if (!bot_token) {
-            return new Response('BOT_TOKEN not configured in environment', { status: 500 });
-        }
 
         // 处理 Webhook 初始化路径
         if (path.includes(`/${token}`)) {
