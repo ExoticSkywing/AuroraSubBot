@@ -249,6 +249,36 @@ function base64ToAb(base64) {
     return bytes.buffer;
 }
 
+function tryParseClashYaml(content) {
+    try {
+        if (!content || !/\bproxies\s*:/i.test(content)) return null;
+        const lines = content.replace(/\r\n/g,'\n').split('\n');
+        const proxies = [];
+        let inProxies = false;
+        let current = null;
+        for (const raw of lines) {
+            const line = raw.replace(/\t/g, '    ');
+            if (!inProxies) {
+                if (/^\s*proxies\s*:\s*$/i.test(line)) { inProxies = true; continue; }
+            } else {
+                if (/^\s*\S.*:\s*$/.test(line) && !/^\s*-\s/.test(line)) { if (current) proxies.push(current); break; }
+                const mItem = line.match(/^\s*-\s*(.*)$/);
+                if (mItem) { if (current) proxies.push(current); current = {}; continue; }
+                const mKV = line.match(/^\s+([A-Za-z0-9_-]+)\s*:\s*(.+)\s*$/);
+                if (mKV && current) {
+                    let val = mKV[2].trim();
+                    val = val.replace(/^['"]|['"]$/g, '');
+                    current[mKV[1]] = val;
+                }
+            }
+        }
+        if (current) proxies.push(current);
+        const normalized = proxies.filter(p => p && (p.name || p["name"]) && (p.type || p["type"]))
+            .map(p => ({ name: String(p.name || p["name"]), type: String(p.type || p["type"]).toUpperCase() }));
+        return normalized.length ? normalized : null;
+    } catch { return null; }
+}
+
 async function encryptText(secret, plaintext) {
     const key = await deriveAesKey(secret);
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -498,25 +528,36 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                         try { content = atob(b64.replace(/\s/g, '')); } catch { content = b64; }
                         const lines = content.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                         const nodeLines = lines.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
-                        const types = nodeLines.map(l => {
-                            const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null;
-                        }).filter(Boolean);
-                        protocolList = types;
-                        protocols = Array.from(new Set(types));
-                        count = nodeLines.length;
-                        let namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
-                        if (namesAll.length === 0) {
-                            const reName = /#([^#\n\r]*)$/;
-                            const fallback = nodeLines.map(l => {
-                                const m = l.match(reName); return m ? decodeURIComponent(m[1]) : null;
-                            }).filter(Boolean);
-                            namesAll.push(...fallback);
+                        if (nodeLines.length > 0) {
+                            const types = nodeLines.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
+                            protocolList = types;
+                            protocols = Array.from(new Set(types));
+                            count = nodeLines.length;
+                            let namesAll = nodeLines.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                            if (namesAll.length === 0) {
+                                const reName = /#([^#\n\r]*)$/;
+                                const fallback = nodeLines.map(l => { const m = l.match(reName); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
+                                namesAll.push(...fallback);
+                            }
+                            allNodeNames = namesAll;
+                            nodeSampleNames = sampleArray(namesAll, 3);
+                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                            countryListAll = countriesFull;
+                            sampledCountries = Array.from(new Set(countriesFull));
+                        } else if (/\bproxies\s*:/i.test(content)) {
+                            const parsed = tryParseClashYaml(content);
+                            if (parsed && parsed.length) {
+                                const namesAll = parsed.map(p => p.name).filter(Boolean);
+                                protocolList = parsed.map(p => p.type);
+                                protocols = Array.from(new Set(protocolList));
+                                count = parsed.length;
+                                allNodeNames = namesAll;
+                                nodeSampleNames = sampleArray(namesAll, 3);
+                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                                countryListAll = countriesFull;
+                                sampledCountries = Array.from(new Set(countriesFull));
+                            }
                         }
-                        allNodeNames = namesAll;
-                        nodeSampleNames = sampleArray(namesAll, 3);
-                        const countriesFull = namesAll.map(extractCountry).filter(Boolean);
-                        countryListAll = countriesFull;
-                        sampledCountries = Array.from(new Set(countriesFull));
                     }
                 }
             } catch (e) {
