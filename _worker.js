@@ -485,6 +485,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         let count = null;
         let userInfo = null;
         let debug = null;
+        const parseDbg = { subJson:false, subBase64:false, subUri:false, base64NodeLines:0, yamlProxies:false, providers:false, providerUrls:0, providerTried:false, providerViaSubstore:false, providerNodes:0, directTried:false, directYaml:false, directProviders:false, directNodes:0 };
 
         const useMiSub = false;
         if (useMiSub && misubBase) {
@@ -554,6 +555,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             sampledCountries = Array.from(new Set(countriesFull));
                             count = list.length;
                             parsedFromJson = true;
+                            parseDbg.subJson = true;
                         }
                     }
                 } catch {}
@@ -567,6 +569,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                         try { content = atob(b64.replace(/\s/g, '')); } catch { content = b64; }
                         const lines = content.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                         const nodeLines = lines.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                        parseDbg.subBase64 = true; parseDbg.base64NodeLines = nodeLines.length;
                         if (nodeLines.length > 0) {
                             const types = nodeLines.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
                             protocolList = types;
@@ -595,16 +598,57 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                 const countriesFull = namesAll.map(extractCountry).filter(Boolean);
                                 countryListAll = countriesFull;
                                 sampledCountries = Array.from(new Set(countriesFull));
+                                parseDbg.yamlProxies = true;
                             }
                         } else if (/\bproxy-providers\s*:/i.test(content)) {
                             const urls = tryExtractProviderUrls(content);
+                            parseDbg.providers = true; parseDbg.providerUrls = urls.length;
                             if (urls && urls.length) {
                                 try {
-                                    const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
-                                    if (pResp && pResp.ok) {
-                                        const pText = await pResp.text();
-                                        if (/\bproxies\s*:/i.test(pText)) {
-                                            const parsed = tryParseClashYaml(pText);
+                                    let resolvedText = null;
+                                    if (substoreBase && substoreName) {
+                                        const pParam = encodeURIComponent(urls[0]);
+                                        const pJson = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=JSON&noCache=true`;
+                                        const pj = await fetch(pJson, { method: 'GET' });
+                                        if (pj && pj.ok) {
+                                            const jtext = await pj.text();
+                                            try {
+                                                const list = JSON.parse(jtext);
+                                                if (Array.isArray(list) && list.length > 0) {
+                                                    const namesAll = list.map(i => i?.name).filter(Boolean);
+                                                    const typesAll = list.map(i => i?.type).filter(Boolean).map(t => String(t).toUpperCase());
+                                                    protocolList = typesAll;
+                                                    protocols = Array.from(new Set(typesAll));
+                                                    count = list.length;
+                                                    allNodeNames = namesAll;
+                                                    nodeSampleNames = sampleArray(namesAll, 3);
+                                                    const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                                                    countryListAll = countriesFull;
+                                                    sampledCountries = Array.from(new Set(countriesFull));
+                                                    parseDbg.providerViaSubstore = true; parseDbg.providerNodes = list.length; parseDbg.providerTried = true;
+                                                    resolvedText = null;
+                                                }
+                                            } catch {}
+                                        }
+                                        if (count === null) {
+                                            const pB64Url = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=base64&ua=Clash&noCache=true`;
+                                            const pb = await fetch(pB64Url, { method: 'GET' });
+                                            if (pb && pb.ok) {
+                                                const b64t = await pb.text();
+                                                try { resolvedText = atob(b64t.replace(/\s/g, '')); } catch { resolvedText = b64t; }
+                                            }
+                                        }
+                                    }
+                                    if (count === null) {
+                                        const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                                        if (pResp && pResp.ok) {
+                                            resolvedText = await pResp.text();
+                                            parseDbg.providerTried = true;
+                                        }
+                                    }
+                                    if (resolvedText !== null) {
+                                        if (/\bproxies\s*:/i.test(resolvedText)) {
+                                            const parsed = tryParseClashYaml(resolvedText);
                                             if (parsed && parsed.length) {
                                                 const namesAll = parsed.map(p => p.name).filter(Boolean);
                                                 protocolList = parsed.map(p => p.type);
@@ -615,9 +659,10 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                                 const countriesFull = namesAll.map(extractCountry).filter(Boolean);
                                                 countryListAll = countriesFull;
                                                 sampledCountries = Array.from(new Set(countriesFull));
+                                                parseDbg.providerNodes = parsed.length;
                                             }
                                         } else {
-                                            const lines2 = pText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                                            const lines2 = resolvedText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                                             const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
                                             if (nodeLines2.length > 0) {
                                                 const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
@@ -635,12 +680,43 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                                 const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
                                                 countryListAll = countriesFull2;
                                                 sampledCountries = Array.from(new Set(countriesFull2));
+                                                parseDbg.providerNodes = nodeLines2.length;
                                             }
                                         }
                                     }
                                 } catch {}
                             }
                         }
+                    }
+                    // 3) 若仍未得到节点，尝试 target=uri（期望返回纯 URI 列表）
+                    if (count === null) {
+                        try {
+                            const uriUrl = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${urlParam}&target=uri&ua=Clash&noCache=true`;
+                            const ur = await fetch(uriUrl, { method: 'GET' });
+                            if (ur && ur.ok) {
+                                const text2 = await ur.text();
+                                const linesU = text2.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                                const nodeLinesU = linesU.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                                if (nodeLinesU.length > 0) {
+                                    const typesU = nodeLinesU.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
+                                    protocolList = typesU;
+                                    protocols = Array.from(new Set(typesU));
+                                    count = nodeLinesU.length;
+                                    let namesAllU = nodeLinesU.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                                    if (namesAllU.length === 0) {
+                                        const reNameU = /#([^#\n\r]*)$/;
+                                        const fallbackU = nodeLinesU.map(l => { const m = l.match(reNameU); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
+                                        namesAllU.push(...fallbackU);
+                                    }
+                                    allNodeNames = namesAllU;
+                                    nodeSampleNames = sampleArray(namesAllU, 3);
+                                    const countriesFullU = namesAllU.map(extractCountry).filter(Boolean);
+                                    countryListAll = countriesFullU;
+                                    sampledCountries = Array.from(new Set(countriesFullU));
+                                    parseDbg.subUri = true;
+                                }
+                            }
+                        } catch {}
                     }
                 }
             } catch (e) {
@@ -650,7 +726,8 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
         // 3) 直接抓取原始链接兜底（Clash YAML 或 URI 列表），并解析 proxy-providers
         if (count === null) {
             try {
-                const r = await fetch(subUrl, { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                const r = await fetch(subUrl, { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache', 'Accept': 'text/plain, text/yaml, */*' } });
+                parseDbg.directTried = true;
                 if (r && r.ok) {
                     const text = await r.text();
                     if (/\bproxies\s*:/i.test(text)) {
@@ -665,16 +742,54 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                             const countriesFull = namesAll.map(extractCountry).filter(Boolean);
                             countryListAll = countriesFull;
                             sampledCountries = Array.from(new Set(countriesFull));
+                            parseDbg.directYaml = true; parseDbg.directNodes = parsed.length;
                         }
                     } else if (/\bproxy-providers\s*:/i.test(text)) {
                         const urls = tryExtractProviderUrls(text);
                         if (urls && urls.length) {
                             try {
-                                const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
-                                if (pResp && pResp.ok) {
-                                    const pText = await pResp.text();
-                                    if (/\bproxies\s*:/i.test(pText)) {
-                                        const parsed = tryParseClashYaml(pText);
+                                let resolvedText = null;
+                                if (substoreBase && substoreName) {
+                                    const pParam = encodeURIComponent(urls[0]);
+                                    const pJson = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=JSON&noCache=true`;
+                                    const pj = await fetch(pJson, { method: 'GET' });
+                                    if (pj && pj.ok) {
+                                        const jtext = await pj.text();
+                                        try {
+                                            const list = JSON.parse(jtext);
+                                            if (Array.isArray(list) && list.length > 0) {
+                                                const namesAll = list.map(i => i?.name).filter(Boolean);
+                                                const typesAll = list.map(i => i?.type).filter(Boolean).map(t => String(t).toUpperCase());
+                                                protocolList = typesAll;
+                                                protocols = Array.from(new Set(typesAll));
+                                                count = list.length;
+                                                allNodeNames = namesAll;
+                                                nodeSampleNames = sampleArray(namesAll, 3);
+                                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                                                countryListAll = countriesFull;
+                                                sampledCountries = Array.from(new Set(countriesFull));
+                                                resolvedText = null;
+                                            }
+                                        } catch {}
+                                    }
+                                    if (count === null) {
+                                        const pB64Url = `${substoreBase.replace(/\/$/, '')}/download/${encodeURIComponent(substoreName)}?url=${pParam}&target=base64&ua=Clash&noCache=true`;
+                                        const pb = await fetch(pB64Url, { method: 'GET' });
+                                        if (pb && pb.ok) {
+                                            const b64t = await pb.text();
+                                            try { resolvedText = atob(b64t.replace(/\s/g, '')); } catch { resolvedText = b64t; }
+                                        }
+                                    }
+                                }
+                                if (count === null) {
+                                    const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                                    if (pResp && pResp.ok) {
+                                        resolvedText = await pResp.text();
+                                    }
+                                }
+                                if (resolvedText !== null) {
+                                    if (/\bproxies\s*:/i.test(resolvedText)) {
+                                        const parsed = tryParseClashYaml(resolvedText);
                                         if (parsed && parsed.length) {
                                             const namesAll = parsed.map(p => p.name).filter(Boolean);
                                             protocolList = parsed.map(p => p.type);
@@ -685,9 +800,10 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                             const countriesFull = namesAll.map(extractCountry).filter(Boolean);
                                             countryListAll = countriesFull;
                                             sampledCountries = Array.from(new Set(countriesFull));
+                                            parseDbg.directProviders = true; parseDbg.directNodes = parsed.length;
                                         }
                                     } else {
-                                        const lines2 = pText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                                        const lines2 = resolvedText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
                                         const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
                                         if (nodeLines2.length > 0) {
                                             const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
@@ -705,6 +821,7 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                             const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
                                             countryListAll = countriesFull2;
                                             sampledCountries = Array.from(new Set(countriesFull2));
+                                            parseDbg.directProviders = true; parseDbg.directNodes = nodeLines2.length;
                                         }
                                     }
                                 }
@@ -743,9 +860,19 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                 if (res && res.info) userInfo = res.info;
             }
         } catch {}
-        // 如果仍无任何信息，则提示失败
+        // 如果仍无任何信息，则提示失败（并输出解析调试）
         if ((count === null && !userInfo)) {
-            await sendSimpleMessage(bot_token, chatId, '❌ 查询失败：后端未返回有效数据，请稍后重试。');
+            const dbgPairs = [
+                `subJson=${parseDbg.subJson}`,
+                `subBase64=${parseDbg.subBase64}(${parseDbg.base64NodeLines})`,
+                `subUri=${parseDbg.subUri}`,
+                `yamlProxies=${parseDbg.yamlProxies}`,
+                `providers=${parseDbg.providers}(${parseDbg.providerUrls})`,
+                `provTried=${parseDbg.providerTried} viaSub=${parseDbg.providerViaSubstore} nodes=${parseDbg.providerNodes}`,
+                `directTried=${parseDbg.directTried} directYaml=${parseDbg.directYaml} directProv=${parseDbg.directProviders} nodes=${parseDbg.directNodes}`
+            ];
+            await sendSimpleMessage(bot_token, chatId, `❌ 查询失败：后端未返回有效数据，请稍后重试。
+<i>debug</i>: ${dbgPairs.join(' | ')}`);
             return new Response('OK');
         }
 
