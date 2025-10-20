@@ -259,11 +259,23 @@ function tryParseClashYaml(content) {
         for (const raw of lines) {
             const line = raw.replace(/\t/g, '    ');
             if (!inProxies) {
-                if (/^\s*proxies\s*:\s*$/i.test(line)) { inProxies = true; continue; }
+                if (/^\s*proxies\s*:/i.test(line)) { inProxies = true; continue; }
             } else {
                 if (/^\s*\S.*:\s*$/.test(line) && !/^\s*-\s/.test(line)) { if (current) proxies.push(current); break; }
                 const mItem = line.match(/^\s*-\s*(.*)$/);
-                if (mItem) { if (current) proxies.push(current); current = {}; continue; }
+                if (mItem) {
+                    if (current) proxies.push(current);
+                    current = {};
+                    const inline = (mItem[1] || '').trim();
+                    if (inline) {
+                        // 支持 inline 映射：- { name: xxx, type: vless, ... } 或 - name: xxx, type: vless
+                        const nameM = inline.match(/name\s*:\s*['"]?([^,'"}]+)['"]?/i);
+                        const typeM = inline.match(/type\s*:\s*['"]?([^,'"}\s]+)['"]?/i);
+                        if (nameM) current.name = nameM[1];
+                        if (typeM) current.type = typeM[1];
+                    }
+                    continue;
+                }
                 const mKV = line.match(/^\s+([A-Za-z0-9_-]+)\s*:\s*(.+)\s*$/);
                 if (mKV && current) {
                     let val = mKV[2].trim();
@@ -277,6 +289,33 @@ function tryParseClashYaml(content) {
             .map(p => ({ name: String(p.name || p["name"]), type: String(p.type || p["type"]).toUpperCase() }));
         return normalized.length ? normalized : null;
     } catch { return null; }
+}
+
+function tryExtractProviderUrls(content) {
+    try {
+        if (!content || !/\bproxy-providers\s*:/i.test(content)) return [];
+        const lines = content.replace(/\r\n/g,'\n').split('\n');
+        const urls = new Set();
+        let inProviders = false;
+        let baseIndent = 0;
+        for (const raw of lines) {
+            const line = raw.replace(/\t/g, '    ');
+            if (!inProviders) {
+                const m = line.match(/^(\s*)proxy-providers\s*:/i);
+                if (m) { inProviders = true; baseIndent = m[1].length; continue; }
+            } else {
+                // 退出 providers 区域
+                if (/^\s*\S/.test(line) && line.match(/^\s*/)[0].length <= baseIndent && !/^\s*#/.test(line)) break;
+                // 常规 url: 行
+                const mUrl = line.match(/\burl\s*:\s*['"]?([^'"\s]+)['"]?/i);
+                if (mUrl && mUrl[1]) urls.add(mUrl[1]);
+                // inline map: { url: ... }
+                const mInline = line.match(/\{[^}]*\burl\s*:\s*['"]?([^'"}\s]+)['"]?[^}]*\}/i);
+                if (mInline && mInline[1]) urls.add(mInline[1]);
+            }
+        }
+        return Array.from(urls);
+    } catch { return []; }
 }
 
 async function encryptText(secret, plaintext) {
@@ -557,12 +596,143 @@ async function handleSubscriptionInfoCommand(bot_token, chatId, subUrl, moontvUr
                                 countryListAll = countriesFull;
                                 sampledCountries = Array.from(new Set(countriesFull));
                             }
+                        } else if (/\bproxy-providers\s*:/i.test(content)) {
+                            const urls = tryExtractProviderUrls(content);
+                            if (urls && urls.length) {
+                                try {
+                                    const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                                    if (pResp && pResp.ok) {
+                                        const pText = await pResp.text();
+                                        if (/\bproxies\s*:/i.test(pText)) {
+                                            const parsed = tryParseClashYaml(pText);
+                                            if (parsed && parsed.length) {
+                                                const namesAll = parsed.map(p => p.name).filter(Boolean);
+                                                protocolList = parsed.map(p => p.type);
+                                                protocols = Array.from(new Set(protocolList));
+                                                count = parsed.length;
+                                                allNodeNames = namesAll;
+                                                nodeSampleNames = sampleArray(namesAll, 3);
+                                                const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                                                countryListAll = countriesFull;
+                                                sampledCountries = Array.from(new Set(countriesFull));
+                                            }
+                                        } else {
+                                            const lines2 = pText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                                            const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                                            if (nodeLines2.length > 0) {
+                                                const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
+                                                protocolList = types2;
+                                                protocols = Array.from(new Set(types2));
+                                                count = nodeLines2.length;
+                                                let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                                                if (namesAll2.length === 0) {
+                                                    const reName2 = /#([^#\n\r]*)$/;
+                                                    const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
+                                                    namesAll2.push(...fallback2);
+                                                }
+                                                allNodeNames = namesAll2;
+                                                nodeSampleNames = sampleArray(namesAll2, 3);
+                                                const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
+                                                countryListAll = countriesFull2;
+                                                sampledCountries = Array.from(new Set(countriesFull2));
+                                            }
+                                        }
+                                    }
+                                } catch {}
+                            }
                         }
                     }
                 }
             } catch (e) {
                 // 忽略 Sub-Store 错误，继续输出已获取的信息
             }
+        }
+        // 3) 直接抓取原始链接兜底（Clash YAML 或 URI 列表），并解析 proxy-providers
+        if (count === null) {
+            try {
+                const r = await fetch(subUrl, { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                if (r && r.ok) {
+                    const text = await r.text();
+                    if (/\bproxies\s*:/i.test(text)) {
+                        const parsed = tryParseClashYaml(text);
+                        if (parsed && parsed.length) {
+                            const namesAll = parsed.map(p => p.name).filter(Boolean);
+                            protocolList = parsed.map(p => p.type);
+                            protocols = Array.from(new Set(protocolList));
+                            count = parsed.length;
+                            allNodeNames = namesAll;
+                            nodeSampleNames = sampleArray(namesAll, 3);
+                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                            countryListAll = countriesFull;
+                            sampledCountries = Array.from(new Set(countriesFull));
+                        }
+                    } else if (/\bproxy-providers\s*:/i.test(text)) {
+                        const urls = tryExtractProviderUrls(text);
+                        if (urls && urls.length) {
+                            try {
+                                const pResp = await fetch(urls[0], { method: 'GET', headers: { 'User-Agent': 'Clash', 'Cache-Control': 'no-cache' } });
+                                if (pResp && pResp.ok) {
+                                    const pText = await pResp.text();
+                                    if (/\bproxies\s*:/i.test(pText)) {
+                                        const parsed = tryParseClashYaml(pText);
+                                        if (parsed && parsed.length) {
+                                            const namesAll = parsed.map(p => p.name).filter(Boolean);
+                                            protocolList = parsed.map(p => p.type);
+                                            protocols = Array.from(new Set(protocolList));
+                                            count = parsed.length;
+                                            allNodeNames = namesAll;
+                                            nodeSampleNames = sampleArray(namesAll, 3);
+                                            const countriesFull = namesAll.map(extractCountry).filter(Boolean);
+                                            countryListAll = countriesFull;
+                                            sampledCountries = Array.from(new Set(countriesFull));
+                                        }
+                                    } else {
+                                        const lines2 = pText.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                                        const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                                        if (nodeLines2.length > 0) {
+                                            const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
+                                            protocolList = types2;
+                                            protocols = Array.from(new Set(types2));
+                                            count = nodeLines2.length;
+                                            let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                                            if (namesAll2.length === 0) {
+                                                const reName2 = /#([^#\n\r]*)$/;
+                                                const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
+                                                namesAll2.push(...fallback2);
+                                            }
+                                            allNodeNames = namesAll2;
+                                            nodeSampleNames = sampleArray(namesAll2, 3);
+                                            const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
+                                            countryListAll = countriesFull2;
+                                            sampledCountries = Array.from(new Set(countriesFull2));
+                                        }
+                                    }
+                                }
+                            } catch {}
+                        }
+                    } else {
+                        const lines2 = text.replace(/\r\n/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+                        const nodeLines2 = lines2.filter(line => /^(ss|ssr|vmess|vless|trojan|hysteria2?|hy|hy2|tuic|anytls|socks5):\/\//i.test(line));
+                        if (nodeLines2.length > 0) {
+                            const types2 = nodeLines2.map(l => { const m = l.match(/^(\w+):\/\//); return m ? String(m[1]).toUpperCase() : null; }).filter(Boolean);
+                            protocolList = types2;
+                            protocols = Array.from(new Set(types2));
+                            count = nodeLines2.length;
+                            let namesAll2 = nodeLines2.map(decodeNodeName).map(n => n && n.trim()).filter(Boolean);
+                            if (namesAll2.length === 0) {
+                                const reName2 = /#([^#\n\r]*)$/;
+                                const fallback2 = nodeLines2.map(l => { const m = l.match(reName2); return m ? decodeURIComponent(m[1]) : null; }).filter(Boolean);
+                                namesAll2.push(...fallback2);
+                            }
+                            allNodeNames = namesAll2;
+                            nodeSampleNames = sampleArray(namesAll2, 3);
+                            const countriesFull2 = namesAll2.map(extractCountry).filter(Boolean);
+                            countryListAll = countriesFull2;
+                            sampledCountries = Array.from(new Set(countriesFull2));
+                        }
+                    }
+                }
+            } catch {}
         }
         // 兜底：从候选地址读取 subscription-userinfo 响应头
         let uiDebug = null;
@@ -784,7 +954,7 @@ export default {
         const username = env.USERNAME || "admin";
         const password = env.PASSWORD || "admin_password";
         const token = env.TOKEN || "token";
-        const bot_token = env.BOT_TOKEN || "8226743743:AAHfrc09vW8cxKHyU0q0YKPuCXrW1ICWdU0";
+        const bot_token = env.BOT_TOKEN; // 必须从环境变量提供，禁止在代码中包含任何类似令牌的占位符
         const GROUP_ID = env.GROUP_ID || "-1002563172210";
         const misubBase = env.MISUB_BASE || null; // MiSub 后端地址
         const misubAdminPassword = env.MISUB_ADMIN_PASSWORD || null; // MiSub 管理密码，用于获取 Cookie
@@ -796,6 +966,10 @@ export default {
         const url = new URL(request.url);
         const PUBLIC_BASE = env.PUBLIC_BASE || `${url.protocol}//${url.host}`;
         const path = url.pathname;
+
+        if (!bot_token) {
+            return new Response('BOT_TOKEN not configured in environment', { status: 500 });
+        }
 
         // 处理 Webhook 初始化路径
         if (path.includes(`/${token}`)) {
